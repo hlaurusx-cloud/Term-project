@@ -15,7 +15,6 @@ from sklearn.metrics import (
 import plotly.express as px
 import plotly.graph_objects as go
 
-
 # ------------------------------------------------------------
 # 유틸 함수: Stepwise Backward Elimination (t-test / p-value 기반)
 # ------------------------------------------------------------
@@ -23,23 +22,28 @@ def stepwise_backward_logit(X, y, p_threshold=0.05, max_iter=30):
     """
     statsmodels.Logit + backward elimination
     - p-value가 큰 변수를 하나씩 제거
-    - X, y는 내부에서 숫자형으로 변환하고 NaN 처리
+    - X, y는 내부에서 숫자형(float)으로 변환하고 NaN 처리
     """
+
     # 1) X, y를 숫자형으로 강제 변환
+    #    (object, bool, string 다 숫자로 바꾸고 안 되면 NaN)
     X_num = X.copy()
-    X_num = X_num.apply(pd.to_numeric, errors="coerce")  # 숫자로 바꾸고, 안 되면 NaN
+    X_num = X_num.apply(pd.to_numeric, errors="coerce")
     y_num = pd.to_numeric(y, errors="coerce")
 
-    # 2) y가 NaN인 행 제거
+    # 2) y가 NaN인 행 제거 (둘 다 같은 index만 사용)
     mask = ~y_num.isna()
     X_num = X_num.loc[mask]
     y_num = y_num.loc[mask]
 
-    # 3) X의 NaN은 0 또는 평균 등으로 채움 (여기서는 0으로)
-    X_num = X_num.fillna(0)
+    # 3) X의 NaN은 0으로 채우고, 둘 다 float로 캐스팅
+    X_num = X_num.fillna(0).astype(float)
+    y_num = y_num.astype(float)
 
-    # 4) 상수항 추가
+    # 4) 상수항 추가 후 역시 float로
     X_const = sm.add_constant(X_num, has_constant="add")
+    X_const = X_const.astype(float)
+
     cols = list(X_const.columns)
     removed = []
 
@@ -47,7 +51,8 @@ def stepwise_backward_logit(X, y, p_threshold=0.05, max_iter=30):
     # Stepwise backward elimination 반복 시작
     # -----------------------------------------
     for _ in range(max_iter):
-        model = sm.Logit(y_num, X_const[cols]).fit(disp=False)  # 모델 적합
+        # 여기서 y_num, X_const[cols]는 전부 float이어야 함
+        model = sm.Logit(y_num, X_const[cols]).fit(disp=False)
         pvalues = model.pvalues
 
         # const 제외한 가장 큰 p-value 찾기
@@ -68,6 +73,7 @@ def stepwise_backward_logit(X, y, p_threshold=0.05, max_iter=30):
     final_model = sm.Logit(y_num, X_const[cols]).fit(disp=False)
 
     return final_model, cols, removed
+
 
 
 # ------------------------------------------------------------

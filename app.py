@@ -43,37 +43,30 @@ def stepwise_backward_logit(X, y, p_threshold=0.05, max_iter=30):
     cols = list(X_const.columns)
     removed = []
 
+    # -----------------------------------------
+    # Stepwise backward elimination 반복 시작
+    # -----------------------------------------
     for _ in range(max_iter):
-        # 여기서도 y_num, X_const[cols]는 전부 float
-        model = sm.Logit(y_num, X_const[cols]).fit(disp=False)
+        model = sm.Logit(y_num, X_const[cols]).fit(disp=False)  # 모델 적합
         pvalues = model.pvalues
 
-        # const 제외하고 가장 p-value 큰 변수 찾기
+        # const 제외한 가장 큰 p-value 찾기
         pvalues_no_const = pvalues.drop("const", errors="ignore")
         worst_feature = pvalues_no_const.idxmax()
         worst_p = pvalues_no_const.max()
 
+        # 제거 조건 체크
         if worst_p > p_threshold and len(cols) > 2:
             cols.remove(worst_feature)
             removed.append((worst_feature, worst_p))
         else:
             break
 
+    # -----------------------------------------
+    # 모든 제거 작업 끝 → 최종 모델 적합
+    # -----------------------------------------
     final_model = sm.Logit(y_num, X_const[cols]).fit(disp=False)
-    return final_model, cols, removed
-    pvalues = model.pvalues
-    # const 제외하고 가장 p-value 큰 변수 찾기
-    pvalues_no_const = pvalues.drop("const", errors="ignore")
-    worst_feature = pvalues_no_const.idxmax()
-    worst_p = pvalues_no_const.max()
-    
-    if worst_p > p_threshold and len(cols) > 2:
-        cols.remove(worst_feature)
-        removed.append((worst_feature, worst_p))
-    else:
-        break
 
-    final_model = sm.Logit(y, X_const[cols]).fit(disp=False)
     return final_model, cols, removed
 
 

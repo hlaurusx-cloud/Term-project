@@ -22,15 +22,46 @@ import plotly.graph_objects as go
 def stepwise_backward_logit(X, y, p_threshold=0.05, max_iter=30):
     """
     statsmodels.Logit + backward elimination
-    - 가장 p-value가 큰 변수를 하나씩 제거
-    - p_threshold보다 큰 변수가 없을 때까지 반복
+    - p-value가 큰 변수를 하나씩 제거
+    - X, y는 내부에서 숫자형으로 변환하고 NaN 처리
     """
-    X_const = sm.add_constant(X, has_constant="add")
+    # 1) X, y를 숫자형으로 강제 변환
+    X_num = X.copy()
+    X_num = X_num.apply(pd.to_numeric, errors="coerce")  # 숫자로 바꾸고, 안 되면 NaN
+    y_num = pd.to_numeric(y, errors="coerce")
+
+    # 2) y가 NaN인 행 제거
+    mask = ~y_num.isna()
+    X_num = X_num.loc[mask]
+    y_num = y_num.loc[mask]
+
+    # 3) X의 NaN은 0 또는 평균 등으로 채움 (여기서는 0으로)
+    X_num = X_num.fillna(0)
+
+    # 4) 상수항 추가
+    X_const = sm.add_constant(X_num, has_constant="add")
     cols = list(X_const.columns)
     removed = []
 
     for _ in range(max_iter):
-        model = sm.Logit(y, X_const[cols]).fit(disp=False)
+        # 여기서도 y_num, X_const[cols]는 전부 float
+        model = sm.Logit(y_num, X_const[cols]).fit(disp=False)
+        pvalues = model.pvalues
+
+        # const 제외하고 가장 p-value 큰 변수 찾기
+        pvalues_no_const = pvalues.drop("const", errors="ignore")
+        worst_feature = pvalues_no_const.idxmax()
+        worst_p = pvalues_no_const.max()
+
+        if worst_p > p_threshold and len(cols) > 2:
+            cols.remove(worst_feature)
+            removed.append((worst_feature, worst_p))
+        else:
+            break
+
+    final_model = sm.Logit(y_num, X_const[cols]).fit(disp=False)
+    return final_model, cols, removed
+
         pvalues = model.pvalues
 
         # const 제외하고 가장 p-value 큰 변수 찾기

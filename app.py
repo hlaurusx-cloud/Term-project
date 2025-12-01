@@ -159,16 +159,42 @@ st.write("인코딩 후 X의 shape:", X_encoded.shape)
 st.dataframe(X_encoded.head())
 
 # ------------------------------------------------------------
-# 4. Train/Test Split
+# 4. Train/Test Split (+ stratify 에러 대비)
 # ------------------------------------------------------------
 st.header("2️⃣ 학습/검증 데이터 분할")
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X_encoded, y, test_size=test_size, random_state=random_state, stratify=y
-)
+# 타깃 분포 확인
+st.markdown("#### 🔍 타깃(부실 여부) 분포")
+class_counts = y.value_counts()
+st.write(class_counts)
+
+# 기본은 stratify=y 로 시도하되, 에러 나면 stratify=None 으로 fallback
+try:
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_encoded,
+        y,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y   # 우선 계층 샘플링 시도
+    )
+except ValueError as e:
+    st.warning(
+        "⚠️ stratify=y 옵션으로 Train/Test를 나누는 과정에서 오류가 발생했습니다. "
+        "타깃 클래스 중 일부가 너무 적을 수 있어요.\n"
+        "→ stratify 없이(무작위 분할) 다시 시도합니다.\n\n"
+        f"원본 오류 메시지(참고용): {e}"
+    )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_encoded,
+        y,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=None
+    )
 
 st.write(f"- Train size: {X_train.shape[0]}  |  Test size: {X_test.shape[0]}")
 st.write(f"- 변수 개수: {X_train.shape[1]}")
+
 
 # ------------------------------------------------------------
 # 5. Stepwise + Logit 모델 학습

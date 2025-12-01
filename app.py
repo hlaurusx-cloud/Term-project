@@ -320,7 +320,10 @@ st.header("5️⃣ 예측확률 기반 고객 세분화 및 부실율")
 X_all_encoded = X_encoded.loc[X_train.index.union(X_test.index)]  # 이미 dropna 되었음
 y_all = y.loc[X_all_encoded.index]
 
-X_all_sel = sm.add_constant(X_all_encoded[selected_cols[1:]], has_constant="add")
+X_all_sel = X_all_encoded[selected_cols[1:]].copy()
+X_all_sel = X_all_sel.apply(pd.to_numeric, errors="coerce").fillna(0)
+X_all_sel = sm.add_constant(X_all_sel, has_constant="add")
+
 all_pred_prob = model_final.predict(X_all_sel)
 
 seg_df = pd.DataFrame({

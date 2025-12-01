@@ -66,12 +66,12 @@ def stepwise_backward_logit(X, y, p_threshold=0.05, max_iter=30):
     pvalues_no_const = pvalues.drop("const", errors="ignore")
     worst_feature = pvalues_no_const.idxmax()
     worst_p = pvalues_no_const.max()
-
-        if worst_p > p_threshold and len(cols) > 2:
-            cols.remove(worst_feature)
-            removed.append((worst_feature, worst_p))
-        else:
-            break
+    
+    if worst_p > p_threshold and len(cols) > 2:
+        cols.remove(worst_feature)
+        removed.append((worst_feature, worst_p))
+    else:
+        break
 
     final_model = sm.Logit(y, X_const[cols]).fit(disp=False)
     return final_model, cols, removed

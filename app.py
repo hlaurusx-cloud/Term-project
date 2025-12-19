@@ -781,12 +781,7 @@ with tabs[3]:
     st.markdown("### 📄 개별 관측치 (샘플)")
     st.dataframe(raw.head(20), use_container_width=True)
 
-    # (권장) 다운로드
-    with st.expander("CSV 다운로드"):
-        st.download_button("Segmentation(agg) CSV 다운로드", data=agg.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="pd_segmentation_agg.csv", mime="text/csv")
-        st.download_button("Segmentation(raw) CSV 다운로드", data=raw.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="pd_segmentation_raw.csv", mime="text/csv")
+   
 
     # ============================================================
     # 5) 고객 세분화 전략 제시 + 시각화 (PD 기반)

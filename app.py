@@ -177,101 +177,94 @@ with tabs[0]:
 from scipy import stats
 
 # ============================================================
-# 2) 데이터 전처리 (t-test + 전처리 파이프라인)
+# 2) 데이터 전처리
 # ============================================================
 with tabs[1]:
-    st.subheader("2) 데이터 전처리")
+    st.subheader("2) 데이터 전처리: 결측치 처리, 인코딩, 표준화, 학습/평가 데이터 분할")
 
     target_col = st.session_state.target_col
     if target_col is None:
-        st.warning("먼저 [데이터 이해(EDA)] 단계가 필요합니다.")
+        st.warning("먼저 [데이터 이해(EDA)] 탭에서 타깃이 설정되어야 합니다.")
         st.stop()
 
-    st.markdown("### ① t-test 기반 변수 선택 (p-value ≤ 0.05)")
+    # 설명변수 추천(스크린샷 기반)
+    suggested = [
+        "credit.policy","purpose","int.rate","installment","log.annual.inc","dti",
+        "fico","days.with.cr.line","revol.bal","revol.util","inq.last.6mths",
+        "delinq.2yrs","pub.rec"
+    ]
+    suggested = [c for c in suggested if c in df.columns]
+    default_features = [c for c in df.columns if c != target_col]
+    default_select = suggested if len(suggested) > 0 else default_features
 
-    X_all = df.drop(columns=[target_col])
-    y_all = df[target_col]
+    feature_cols = st.multiselect(
+        "설명 변수(X) 선택",
+        options=default_features,
+        default=default_select
+    )
+    if len(feature_cols) == 0:
+        st.warning("설명 변수를 최소 1개 이상 선택하세요.")
+        st.stop()
 
-    numeric_cols = X_all.select_dtypes(include=[np.number]).columns.tolist()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        test_size = st.slider("Test 비율", 0.1, 0.5, 0.2, 0.05)
+    with col2:
+        random_state = st.number_input("random_state", 0, 9999, 42, 1)
+    with col3:
+        stratify = st.checkbox("Stratify(Y) 적용", value=True)
 
-    pvals = []
-    for col in numeric_cols:
-        try:
-            g0 = X_all.loc[y_all == 0, col].dropna()
-            g1 = X_all.loc[y_all == 1, col].dropna()
-            if len(g0) > 1 and len(g1) > 1:
-                _, p = stats.ttest_ind(g0, g1, equal_var=False)
-                pvals.append((col, p))
-        except:
-            pass
+    if st.button("전처리 + 분할 실행"):
+        X = df[feature_cols].copy()
+        y = df[target_col].astype(int).values
 
-    pval_df = pd.DataFrame(pvals, columns=["변수", "p-value"]).sort_values("p-value")
-    st.dataframe(pval_df, use_container_width=True)
+        # 수치/범주 분리
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        cat_cols = [c for c in X.columns if c not in num_cols]
 
-    selected_numeric = pval_df.loc[pval_df["p-value"] <= 0.05, "변수"].tolist()
-
-    st.write("✔ 선택된 수치형 변수 (p ≤ 0.05)")
-    st.write(selected_numeric)
-
-    # 범주형 변수는 모두 유지 (t-test 대상 아님)
-    categorical_cols = X_all.select_dtypes(exclude=[np.number]).columns.tolist()
-
-    selected_features = selected_numeric + categorical_cols
-    st.session_state.feature_cols = selected_features
-
-    st.markdown("---")
-    st.markdown("### ② 전처리 실행 (버튼 클릭 시)")
-
-    if st.button("🧹 전처리 실행"):
-        X = df[selected_features].copy()
-        y = df[target_col].astype(int)
-
-        # ---------------------------
-        # 이상치 제거 (IQR 방식)
-        # ---------------------------
-        for col in selected_numeric:
-            Q1 = X[col].quantile(0.25)
-            Q3 = X[col].quantile(0.75)
-            IQR = Q3 - Q1
-            lower = Q1 - 1.5 * IQR
-            upper = Q3 + 1.5 * IQR
-            X = X[(X[col] >= lower) & (X[col] <= upper)]
-
-        y = y.loc[X.index]
-
-        # ---------------------------
         # 전처리 파이프라인
-        # ---------------------------
-        numeric_transformer = Pipeline([
+        numeric_transformer = Pipeline(steps=[
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler())
         ])
-
-        categorical_transformer = Pipeline([
+        categorical_transformer = Pipeline(steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
             ("onehot", OneHotEncoder(handle_unknown="ignore"))
         ])
 
-        preprocessor = ColumnTransformer([
-            ("num", numeric_transformer, selected_numeric),
-            ("cat", categorical_transformer, categorical_cols)
-        ])
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", numeric_transformer, num_cols),
+                ("cat", categorical_transformer, cat_cols)
+            ],
+            remainder="drop"
+        )
 
+        strat_y = y if stratify else None
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
+            X, y,
+            test_size=float(test_size),
+            random_state=int(random_state),
+            stratify=strat_y
         )
 
         X_train_p = preprocessor.fit_transform(X_train)
         X_test_p = preprocessor.transform(X_test)
 
         # 세션 저장
+        st.session_state.feature_cols = feature_cols
         st.session_state.preprocessor = preprocessor
         st.session_state.X_train_p = X_train_p
         st.session_state.X_test_p = X_test_p
         st.session_state.y_train = y_train
         st.session_state.y_test = y_test
 
-        st.success("전처리 완료: 이상치 제거, 결측치 처리, 스케일링, 원-핫 인코딩 완료")
+        # 모델/예측 초기화
+        st.session_state.model = None
+        st.session_state.proba_test = None
+
+        st.success("전처리 및 데이터 분할 완료")
+        st.write("X_train shape:", X_train_p.shape, " / X_test shape:", X_test_p.shape)
 
 
 # ============================================================

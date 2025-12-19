@@ -262,152 +262,240 @@ with tabs[0]:
 
 
 # ============================================================
-# 2) 데이터 전처리 (Preprocessing)
+# 2) 데이터 전처리 (Preprocessing) - 사용자 정의 절차 반영
+# 1) T-test (Y=not.fully.paid, p<=0.5) -> 통과 feature만 표시
+# 2) [데이터 전처리] 버튼 -> 이상치/결측치 제거, 스케일링, 원핫 인코딩
+# 3) [Stepwise] 버튼 -> 전진선택법 + 8:2 분할
 # ============================================================
 
 with tabs[1]:
     st.subheader("2) 데이터 전처리")
 
     # --------------------------------------------------------
-    # (1) 타깃 변수 확인
+    # (0) 타깃 변수 확인
     # --------------------------------------------------------
-    target_col = st.session_state.target_col
+    target_col = st.session_state.get("target_col", None)
     if target_col is None:
         st.warning("먼저 [데이터 이해(EDA)] 단계에서 타깃 변수를 확인해야 합니다.")
         st.stop()
 
-    st.info(f"현재 설정된 타깃 변수(Y): {target_col}")
+    # 사용자가 요구한 타깃 고정(안전장치)
+    if target_col != "not.fully.paid":
+        st.info("타깃은 'not.fully.paid'로 고정되어 있습니다. (EDA 탭에서 설정된 값 사용)")
+        target_col = "not.fully.paid"
+
+    st.info(f"현재 타깃 변수(Y): {target_col}")
 
     # ========================================================
-    # STEP 1. T-test 기반 변수 사전 선택
+    # STEP 1) T-test (p-value <= 0.5)  -> 통과 feature만 표시
     # ========================================================
-    st.markdown("## ① T-test 기반 변수 사전 선택")
+    st.markdown("## ① T-test 기반 Feature 1차 선별")
 
+    p_thr = 0.5  # 요청 기준 고정
+    # 수치형 변수만 t-test 수행
     num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
     num_cols_all = [c for c in num_cols_all if c != target_col]
 
     if st.button("T-test 실행 (p ≤ 0.5)"):
-        ttest_result = []
-        passed_cols = []
-
         g0 = df[df[target_col] == 0]
         g1 = df[df[target_col] == 1]
+
+        ttest_rows = []
+        passed_cols = []
 
         for col in num_cols_all:
             x0 = g0[col].dropna()
             x1 = g1[col].dropna()
 
+            # 표본 부족 시 제외
             if len(x0) < 2 or len(x1) < 2:
                 continue
 
-            stat, p = stats.ttest_ind(x0, x1, equal_var=False)
-            ttest_result.append((col, p))
+            # Welch t-test
+            try:
+                stat, p = stats.ttest_ind(x0, x1, equal_var=False, nan_policy="omit")
+            except Exception:
+                continue
 
-            if p <= 0.5:
+            ttest_rows.append((col, float(p)))
+            if p <= p_thr:
                 passed_cols.append(col)
 
-        ttest_df = pd.DataFrame(ttest_result, columns=["feature", "p_value"]) \
-                      .sort_values("p_value")
+        ttest_df = pd.DataFrame(ttest_rows, columns=["feature", "p_value"]).sort_values("p_value")
 
-        st.session_state.ttest_passed = passed_cols
-        st.session_state.ttest_table = ttest_df
+        # 세션 저장
+        st.session_state["ttest_passed"] = passed_cols
+        st.session_state["ttest_table"] = ttest_df
 
-        st.success(f"T-test 완료: {len(passed_cols)}개 변수 통과")
-        st.dataframe(ttest_df, use_container_width=True)
+        # ✅ 통과 feature만 표시
+        st.success(f"T-test 완료: 통과 feature {len(passed_cols)}개 (기준 p≤{p_thr})")
+        if len(passed_cols) == 0:
+            st.warning("통과한 feature가 없습니다. (데이터/기준을 점검하세요)")
+        else:
+            st.markdown("### ✅ T-test 통과 feature 목록")
+            st.write(passed_cols)
+
+        # 필요할 때만 표 확인
+        with st.expander("p-value 결과표 보기(선택)"):
+            st.dataframe(ttest_df, use_container_width=True)
 
     # ========================================================
-    # STEP 2. 데이터 전처리
+    # STEP 2) [데이터 전처리] 버튼
+    #  - 이상치 제거(IQR) + 결측치 제거 + 원핫 + 스케일링
     # ========================================================
     st.markdown("## ② 데이터 전처리")
 
     if "ttest_passed" not in st.session_state:
-        st.info("먼저 T-test를 실행하세요.")
+        st.info("먼저 위에서 [T-test 실행]을 눌러 feature를 선별하세요.")
         st.stop()
+
+    passed_num = st.session_state.get("ttest_passed", [])
+
+    # (선택) 이상치 제거 강도 조절(보이게 하고 싶으면 유지, 싫으면 고정값으로 두세요)
+    iqr_k = st.slider("IQR 이상치 제거 강도(k)", 1.0, 3.0, 1.5, 0.1)
 
     if st.button("데이터 전처리 실행"):
-        num_cols = st.session_state.ttest_passed
-        cat_cols = [c for c in df.columns if c not in num_cols + [target_col]]
+        # X 구성: (수치형은 t-test 통과 컬럼만) + (범주형은 전체 유지)
+        num_cols = passed_num[:]  # 통과 수치형
+        all_cols = df.columns.tolist()
+        # 범주형 컬럼 정의: 전체에서 target 및 모든 수치형을 제외한 것
+        numeric_all = df.select_dtypes(include=[np.number]).columns.tolist()
+        cat_cols = [c for c in all_cols if (c not in numeric_all) and (c != target_col)]
 
-        X = df[num_cols + cat_cols].copy()
-        y = df[target_col].astype(int)
+        use_cols = num_cols + cat_cols
+        if len(use_cols) == 0:
+            st.error("전처리에 사용할 feature가 없습니다. (T-test 통과 컬럼이 0개이고 범주형도 없음)")
+            st.stop()
 
-        # 이상치 제거 (IQR)
-        for col in num_cols:
-            q1, q3 = X[col].quantile([0.25, 0.75])
-            iqr = q3 - q1
-            X = X[(X[col] >= q1 - 1.5 * iqr) & (X[col] <= q3 + 1.5 * iqr)]
+        X = df[use_cols].copy()
+        y = df[target_col].astype(int).copy()
 
-        y = y.loc[X.index]
+        # -----------------------------
+        # (1) 이상치 제거: IQR (수치형 통과 변수만 적용)
+        # -----------------------------
+        if len(num_cols) > 0:
+            tmp = pd.concat([X, y], axis=1)
+            mask = pd.Series(True, index=tmp.index)
+            for c in num_cols:
+                s = tmp[c]
+                q1 = s.quantile(0.25)
+                q3 = s.quantile(0.75)
+                iqr = q3 - q1
+                if pd.isna(iqr) or iqr == 0:
+                    continue
+                lo = q1 - iqr_k * iqr
+                hi = q3 + iqr_k * iqr
+                mask &= s.between(lo, hi) | s.isna()
+            tmp = tmp.loc[mask].copy()
+            y = tmp[target_col].astype(int)
+            X = tmp.drop(columns=[target_col])
 
-        # 결측치 제거
-        data = pd.concat([X, y], axis=1).dropna()
-        X = data.drop(columns=[target_col])
-        y = data[target_col]
+        # -----------------------------
+        # (2) 결측치 제거 (요청: 제거)
+        # -----------------------------
+        tmp2 = pd.concat([X, y], axis=1).dropna()
+        y = tmp2[target_col].astype(int)
+        X = tmp2.drop(columns=[target_col])
 
-        # 원핫 인코딩
-        X = pd.get_dummies(X, drop_first=True)
+        # -----------------------------
+        # (3) 원핫 인코딩
+        # -----------------------------
+        X_oh = pd.get_dummies(X, drop_first=True)
 
-        # 스케일링
+        # -----------------------------
+        # (4) 특성 스케일링 (수치형 통과 변수에 해당하는 컬럼만)
+        # - get_dummies 이후에도 수치형 컬럼명은 유지됨
+        # -----------------------------
         scaler = StandardScaler()
-        X[num_cols] = scaler.fit_transform(X[num_cols])
+        scale_cols = [c for c in X_oh.columns if c in num_cols]
+        if len(scale_cols) > 0:
+            X_oh[scale_cols] = scaler.fit_transform(X_oh[scale_cols])
 
-        st.session_state.X_processed = X
-        st.session_state.y_processed = y
+        # 세션 저장
+        st.session_state["X_processed"] = X_oh
+        st.session_state["y_processed"] = y
+        st.session_state["scaler"] = scaler
+        st.session_state["used_num_cols"] = num_cols
+        st.session_state["used_cat_cols"] = cat_cols
 
-        st.success("데이터 전처리 완료")
-        st.write("전처리 후 데이터 크기:", X.shape)
+        st.success("데이터 전처리 완료 (이상치/결측치 제거 + 원핫 + 스케일링)")
+        st.write("전처리 후 X shape:", X_oh.shape, " / y length:", len(y))
 
     # ========================================================
-    # STEP 3. Feature Selection + 데이터 분할
+    # STEP 3) Stepwise(전진선택법) + 8:2 분할
     # ========================================================
-    st.markdown("## ③ Feature Selection + 데이터 분할")
+    st.markdown("## ③ Feature Selection (Stepwise Forward) + 데이터 분할(8:2)")
 
-    if "X_processed" not in st.session_state:
-        st.info("먼저 데이터 전처리를 실행하세요.")
+    if "X_processed" not in st.session_state or "y_processed" not in st.session_state:
+        st.info("먼저 [데이터 전처리 실행]을 완료하세요.")
         st.stop()
 
-    if st.button("Stepwise + 데이터 분할 (8:2)"):
-        X = st.session_state.X_processed
-        y = st.session_state.y_processed
+    p_enter = st.slider("Stepwise 진입 기준(p_enter)", 0.001, 0.50, 0.05, 0.001)
 
-        remaining = list(X.columns)
+    if st.button("Stepwise 실행 + 8:2 분할"):
+        Xp = st.session_state["X_processed"]
+        yp = st.session_state["y_processed"]
+
+        remaining = list(Xp.columns)
         selected = []
+        final_model = None
 
-        while remaining:
+        # 전진선택법
+        for _ in range(len(remaining)):
             best_p = None
             best_var = None
+            best_model = None
 
-            for var in remaining:
+            for v in remaining:
+                cols_try = selected + [v]
+                X_const = sm.add_constant(Xp[cols_try], has_constant="add")
                 try:
-                    X_const = sm.add_constant(X[selected + [var]])
-                    model = sm.Logit(y, X_const).fit(disp=False)
-                    p = model.pvalues[var]
-                except:
+                    m = sm.Logit(yp, X_const).fit(disp=False)
+                    pval = float(m.pvalues.get(v, 1.0))
+                except Exception:
                     continue
 
-                if best_p is None or p < best_p:
-                    best_p = p
-                    best_var = var
+                if best_p is None or pval < best_p:
+                    best_p = pval
+                    best_var = v
+                    best_model = m
 
-            if best_p is None or best_p > 0.05:
+            if best_var is None or best_p is None or best_p > p_enter:
                 break
 
             selected.append(best_var)
             remaining.remove(best_var)
+            final_model = best_model
 
-        X_final = X[selected]
+        if len(selected) == 0:
+            st.warning("선택된 변수가 없습니다. p_enter를 완화하거나 전처리 설정을 조정하세요.")
+            st.stop()
 
+        # 8:2 분할
+        X_sel = Xp[selected].copy()
         X_train, X_test, y_train, y_test = train_test_split(
-            X_final, y, test_size=0.2, random_state=42, stratify=y
+            X_sel, yp,
+            test_size=0.2,
+            random_state=42,
+            stratify=yp
         )
 
-        st.session_state.X_train = X_train
-        st.session_state.X_test = X_test
-        st.session_state.y_train = y_train
-        st.session_state.y_test = y_test
+        # 세션 저장 (후속 모델 단계에서 사용)
+        st.session_state["selected_cols"] = selected
+        st.session_state["X_train"] = X_train
+        st.session_state["X_test"] = X_test
+        st.session_state["y_train"] = y_train
+        st.session_state["y_test"] = y_test
+        st.session_state["logit_stepwise_model"] = final_model
 
-        st.success(f"Stepwise 완료: 선택 변수 {len(selected)}개")
-        st.write("선택된 변수:", selected)
+        st.success(f"Stepwise 완료: 선택 변수 {len(selected)}개 / Train {X_train.shape} / Test {X_test.shape}")
+        st.markdown("### ✅ 선택된 변수")
+        st.write(selected)
+
+        # (선택) 요약 출력: 너무 길면 잘릴 수 있어서 앞부분만
+        if final_model is not None:
+            with st.expander("Logit Summary 보기(선택)"):
+                st.text(str(final_model.summary())[:4000])
 
 
 

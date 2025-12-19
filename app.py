@@ -571,12 +571,14 @@ with tabs[2]:
     # --------------------------------------------------------
     # 세션에서 데이터 로드 (핵심)
     # --------------------------------------------------------
-    st.session_state["X_train"] = st.session_state["X_train_mlp"]
-    st.session_state["X_test"]  = st.session_state["X_test_mlp"]
+    X_train = st.session_state["X_train_mlp"]
+    X_test  = st.session_state["X_test_mlp"]
+    y_train = st.session_state["y_train"]
+    y_test  = st.session_state["y_test"]
 
     # numpy 변환 (MLP 안정성)
-    Xtr = X_train.values
-    Xte = X_test.values
+    Xtr = X_train.to_numpy()
+    Xte = X_test.numpy()
 
     st.write("Train shape:", Xtr.shape, " / Test shape:", Xte.shape)
 

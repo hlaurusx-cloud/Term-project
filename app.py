@@ -149,17 +149,18 @@ with tabs[0]:
     st.write("기초 통계(수치형)")
     st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
 
-    # --------------------------------------------------------
-    # 타깃 변수 고정 (UI 출력 없음)
-    # --------------------------------------------------------
-    TARGET = "not.fully.paid"
+  # 타깃 변수 고정 (디자인 유지, 선택 불가)
+    default_target = "not.fully.paid" if "not.fully.paid" in df.columns else df.columns[-1]
 
-    if TARGET not in df.columns:
-        st.error(f"타깃 변수 '{TARGET}' 컬럼이 데이터에 없습니다.")
-        st.stop()
+    target_col = st.selectbox(
+        "타깃(Y) 컬럼 선택",
+        options=df.columns.tolist(),
+        index=df.columns.tolist().index(default_target),
+        disabled=True   # 🔒 선택 기능 비활성화
+    )
 
-    # 세션에만 저장 (보이지 않게)
-    st.session_state.target_col = TARGET
+    st.session_state.target_col = target_col
+
 
     # 타깃 분포만 표시
     y_raw = df[TARGET]

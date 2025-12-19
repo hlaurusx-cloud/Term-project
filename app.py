@@ -835,7 +835,7 @@ with tabs[4]:
         """
         - **Grade 개수**: 14
         - **등급 분할 방식**: 분위수(qcut) 기반  
-        - **📌 Risk Segment 구조(고정, 30/40/30)
+        - 📌 Risk Segment 구조(고정, 30/40/30)
         """
     )
 
@@ -1002,19 +1002,4 @@ with tabs[4]:
     ax.set_title("Cumulative Bad Capture Curve")
     st.pyplot(fig, clear_figure=True)
 
-    # --------------------------------------------------------
-    # F) 다운로드
-    # --------------------------------------------------------
-    with st.expander("CSV 다운로드"):
-        st.download_button(
-            "Grade Summary CSV 다운로드",
-            data=grade_summary.to_csv(index=False).encode("utf-8-sig"),
-            file_name="pd_grade_summary.csv",
-            mime="text/csv"
-        )
-        st.download_button(
-            "Segment Summary CSV 다운로드",
-            data=segment_summary.to_csv(index=False).encode("utf-8-sig"),
-            file_name="pd_segment_summary.csv",
-            mime="text/csv"
-        )
+   

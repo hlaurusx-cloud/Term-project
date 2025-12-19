@@ -511,6 +511,9 @@ with tabs[1]:
             st.session_state["y_train"] = y_train
             st.session_state["y_test"] = y_test
             st.session_state["logit_stepwise_model"] = final_model
+            
+            st.session_state.pop("proba_test", None)
+            st.session_state.pop("model", None)
 
             st.session_state["done_3"] = True
             st.rerun()
@@ -609,101 +612,55 @@ with tabs[2]:
             ax.set_title("Training Loss Curve")
             st.pyplot(fig, clear_figure=True)
 
-# ------------------------------------------------------------
-# 4) 평가 (ROC/PR/CM + threshold)
-# ------------------------------------------------------------
-if "mlp_model" in st.session_state:
-    st.markdown("### 3) 성능 평가")
-    mlp = st.session_state["mlp_model"]
-
-    # 확률 예측
-    proba = mlp.predict_proba(Xte)[:, 1]
-
-    # threshold 조절
-    thr = st.slider("결정 임계값(threshold)", 0.01, 0.99, 0.50, 0.01)
-    pred = (proba >= thr).astype(int)
-
-    roc_auc = roc_auc_score(y_test, proba)
-    pr_auc = average_precision_score(y_test, proba)
-    f1 = f1_score(y_test, pred)
-    prec = precision_score(y_test, pred, zero_division=0)
-    rec = recall_score(y_test, pred, zero_division=0)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("ROC-AUC", f"{roc_auc:.4f}")
-    c2.metric("PR-AUC(AP)", f"{pr_auc:.4f}")
-    c3.metric("F1", f"{f1:.4f}")
-    c4.metric("Recall", f"{rec:.4f}")
-
-    # Confusion Matrix
-    cm = confusion_matrix(y_test, pred)
-    st.write("Confusion Matrix")
-    st.dataframe(pd.DataFrame(cm, index=["True0","True1"], columns=["Pred0","Pred1"]),
-                 use_container_width=True)
-
-    # ROC Curve
-    fpr, tpr, _ = roc_curve(y_test, proba)
-    fig, ax = plt.subplots()
-    ax.plot(fpr, tpr)
-    ax.set_xlabel("FPR")
-    ax.set_ylabel("TPR")
-    ax.set_title("ROC Curve")
-    st.pyplot(fig)
-
-    # PR Curve
-    pr, rc, _ = precision_recall_curve(y_test, proba)
-    fig, ax = plt.subplots()
-    ax.plot(rc, pr)
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.set_title("Precision-Recall Curve")
-    st.pyplot(fig)
-
-    st.caption("불균형 데이터에서는 PR-AUC와 Recall이 특히 중요합니다.")
-
-
 # ============================================================
-# 5) PD 기반 고객세분화/부실율
+# 4) 모델 평가 & Segmentation (PD 등급표)
 # ============================================================
-with tabs[4]:
-    st.subheader("5) PD 기반 고객세분화/부실율(Observed Default Rate) + 전략 템플릿")
+with tabs[3]:
+    st.subheader("4) 모델 평가 및 PD Segmentation")
 
-    if st.session_state.proba_test is None:
-        st.info("먼저 [3) 모델링]에서 신경망을 학습하세요.")
+    # ======================================================
+    # ✅ 세그멘테이션 호출 전 가드 (⭐你找的就是这个)
+    # ======================================================
+    required = ["y_test", "proba_test"]
+    missing = [k for k in required if k not in st.session_state]
+
+    if missing:
+        st.warning("먼저 MLP 모델을 학습하여 예측확률(PD)을 생성하세요.")
         st.stop()
 
-    y_test = st.session_state.y_test
-    proba_test = st.session_state.proba_test
+    y_test = st.session_state["y_test"]
+    proba_test = st.session_state["proba_test"]
 
-    n_bins = st.slider("위험등급 개수(분위수)", 3, 10, 5, 1)
-    agg, raw = segmentation_table(y_test, proba_test, n_bins=int(n_bins))
+    # 길이 불일치 방지
+    if len(y_test) != len(proba_test):
+        st.error(
+            f"y_test({len(y_test)}) 와 proba_test({len(proba_test)}) 길이가 다릅니다.\n"
+            "③ Stepwise 이후 MLP를 다시 학습하세요."
+        )
+        st.stop()
 
-    st.write("등급별 요약(고객수/평균PD/관측부실율)")
+    # ======================================================
+    # Segmentation 설정
+    # ======================================================
+    st.markdown("### 🔹 PD Segmentation 설정")
+    n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1)
+
+    # ======================================================
+    # Segmentation 실행
+    # ======================================================
+    agg, raw = segmentation_table(
+        y_test=y_test,
+        proba=proba_test,
+        n_bins=int(n_bins)
+    )
+
+    st.success("PD Segmentation Table 생성 완료")
+
+    # ======================================================
+    # 결과 표시
+    # ======================================================
+    st.markdown("### 📊 PD Segmentation Table")
     st.dataframe(agg, use_container_width=True)
 
-    fig = plot_default_rate_by_grade(agg, title="Observed Default Rate by Risk Grade")
-    st.pyplot(fig, clear_figure=True)
-
-    # 세분화 해석/전략(보고서 문장에 바로 사용 가능)
-    st.markdown("### 전략 제안(보고서/발표용 템플릿)")
-    grade_list = agg["Grade"].tolist()
-    if grade_list:
-        low = grade_list[0]
-        high = grade_list[-1]
-        mid = grade_list[len(grade_list)//2]
-
-        st.write(
-            f"""
-- **{low}(저위험)**: 자동승인 확대, 우대금리/한도 상향, 교차판매 타겟
-- **{mid}(중위험)**: 기본정책 + 조건부 승인(소득/DTI 확인), 모니터링 강화
-- **{high}(고위험)**: 심사 강화(추가서류/보증), 한도 축소, 금리 가산 또는 거절 기준 적용
-"""
-        )
-
-    st.markdown("### 부실율 정의")
-    st.code("부실율(Observed Default Rate) = (해당 등급의 실제 부실(1) 건수) / (해당 등급 고객수)")
-
-st.caption(
-    "본 앱은 데이터마이닝 절차(이해→전처리→모델링→평가→세분화)를 신경망(MLP)로 구현한 과제/프로토타입 템플릿입니다. "
-    "실제 리스크 모델링에서는 누수 변수 제거, 시점 정의, 캘리브레이션, 불균형 처리 등을 추가하는 것이 권장됩니다."
-)
+    st.markdown("### 📄 개별 관측치 (샘플)")
+    st.dataframe(raw.head(20), use_container_width=True)

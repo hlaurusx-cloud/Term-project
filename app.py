@@ -583,19 +583,32 @@ with tabs[1]:
             st.session_state["done_3"] = True
             st.rerun()
 
-    # ✅ ③ 결과 항상 표시
+        # ✅ ③ 결과 항상 표시
     if st.session_state.get("done_3", False):
+    
+        # --- KeyError 방지: 필요한 키가 모두 있는지 확인 ---
+        required_keys = ["X_train_mlp", "X_test_mlp", "X_train_logit", "X_test_logit", "cols_mlp", "cols_logit"]
+        missing = [k for k in required_keys if k not in st.session_state or st.session_state.get(k) is None]
+    
+        if len(missing) > 0:
+            st.warning("③이 완료로 표시되었지만, 분할/저장 데이터가 아직 생성되지 않았습니다.")
+            st.write("누락된 세션 키:", missing)
+            st.info("👉 ③의 [데이터 분할 + 스케일링 저장] 버튼을 다시 눌러 저장을 완료하세요.")
+            # done_3를 강제로 False로 되돌려도 됨(권장)
+            st.session_state["done_3"] = False
+            st.stop()
+    
         st.success("✅ ③ 완료: 8:2 분할 + Train 기준 표준화(MLP) + 분모델(Logit/MLP) 저장 완료")
-
+    
         st.write("MLP Train/Test:", st.session_state["X_train_mlp"].shape, "/", st.session_state["X_test_mlp"].shape)
         st.write("Logit Train/Test:", st.session_state["X_train_logit"].shape, "/", st.session_state["X_test_logit"].shape)
-
+    
         with st.expander("MLP 변수(원핫 포함, purpose 포함) 전체 보기"):
             st.write(st.session_state.get("cols_mlp", []))
-
+    
         with st.expander("Logit 변수(기본: 수치형만, purpose/원핫 제외) 보기"):
             st.write(st.session_state.get("cols_logit", []))
-
+        
 
 
 # ============================================================

@@ -666,8 +666,8 @@ with tabs[3]:
     # Segmentation 실행
     # ======================================================
     agg, raw = segmentation_table(
-        y_test=y_test,
-        proba=proba_test,
+        y_test,
+        proba_test,
         n_bins=int(n_bins)
     )
 

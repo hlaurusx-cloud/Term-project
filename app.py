@@ -20,7 +20,7 @@ from sklearn.metrics import (
 # Streamlit 기본 설정
 # ----------------------------
 st.set_page_config(page_title="신경망 기반 개인신용평가(부실예측)", layout="wide")
-st.title("신경망(MLP) 기반 개인신용평가 모델 - Streamlit 데이터마이닝 절차")
+st.title("신경망(MLP) 기반 개인신용평가 모델 ")
 
 # ----------------------------
 # 유틸 함수

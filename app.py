@@ -289,76 +289,254 @@ with tabs[0]:
         st.info("상관관계를 계산할 수 있는 수치형 변수가 충분하지 않습니다.")
 
 
-# =========================================================
-# ② 데이터 전처리
-# =========================================================
-st.markdown("## ② 데이터 전처리")
-st.caption("이상치 제거(IQR) + 결측치 제거 + 원핫 인코딩 (스케일링은 ③에서 Train 기준)")
+# ============================================================
+# 2) 데이터 전처리 (Wizard-like / 단계 고정형)
+# ① T-test (p<=0.05) -> 통과 feature만 표시
+# ② 전처리 버튼 -> 이상치(IQR,k=1.5)/결측치 제거 + 원핫 (스케일링은 ③)
+# ③ 데이터 분할(8:2) + Train 기준 표준화
+# ============================================================
+with tabs[1]:
+    st.subheader("2) 데이터 전처리")
 
-if not st.session_state.get("done_1", False):
-    st.info("🔒 ① T-test를 완료하면 ②가 활성화됩니다.")
-    st.stop()
+    # -----------------------------
+    # 상태 초기화 (Reset 버튼 없음)
+    # -----------------------------
+    if "done_1" not in st.session_state: st.session_state["done_1"] = False
+    if "done_2" not in st.session_state: st.session_state["done_2"] = False
+    if "done_3" not in st.session_state: st.session_state["done_3"] = False
 
-if not st.session_state.get("done_2", False):
-    if st.button("데이터 전처리 실행"):
-        passed_num = st.session_state.get("ttest_passed", [])
+    # -----------------------------
+    # 타깃 고정 (과제 조건: not.fully.paid)
+    # -----------------------------
+    if df is None:
+        st.warning("먼저 데이터를 로드하세요.")
+        st.stop()
 
-        # X 구성: 수치형=passed_num + 범주형=전체(단, target 제외)
-        numeric_all = df.select_dtypes(include=[np.number]).columns.tolist()
-        cat_cols = [c for c in df.columns if (c not in numeric_all) and (c != target_col)]
-        use_cols = passed_num + cat_cols
+    target_col = "not.fully.paid"
+    st.session_state["target_col"] = target_col
 
-        if len(use_cols) == 0:
-            st.error("전처리에 사용할 feature가 없습니다.")
-            st.stop()
+    if target_col not in df.columns:
+        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
+        st.stop()
 
-        X = df[use_cols].copy()
-        y = df[target_col].astype(int).copy()
+    st.info(f"타깃(Y): {target_col}")
 
-        # (1) 이상치 제거(IQR) - passed 수치형에만 적용 (k는 내부 고정)
-        IQR_K = 1.5
-        if len(passed_num) > 0:
-            tmp = pd.concat([X, y.rename(target_col)], axis=1)
-            mask = pd.Series(True, index=tmp.index)
+    # =========================================================
+    # ① T-test (p <= 0.05 고정)
+    # =========================================================
+    st.markdown("## ① T-test 기반 Feature 1차 선별")
+    st.caption("수치형 변수만, not.fully.paid(0/1) 기준, p-value ≤ 0.05 통과")
 
-            for c in passed_num:
-                s = tmp[c]
-                q1, q3 = s.quantile(0.25), s.quantile(0.75)
-                iqr = q3 - q1
-                if pd.isna(iqr) or iqr == 0:
+    p_thr = 0.05
+    num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
+    num_cols_all = [c for c in num_cols_all if c != target_col]
+
+    if not st.session_state["done_1"]:
+        if st.button("T-test 실행 (p ≤ 0.05)"):
+            g0 = df[df[target_col] == 0]
+            g1 = df[df[target_col] == 1]
+
+            rows = []
+            passed = []
+
+            for col in num_cols_all:
+                x0 = g0[col].dropna()
+                x1 = g1[col].dropna()
+                if len(x0) < 2 or len(x1) < 2:
                     continue
-                lo, hi = q1 - IQR_K * iqr, q3 + IQR_K * iqr
-                mask &= s.between(lo, hi) | s.isna()
+                try:
+                    _, p = stats.ttest_ind(x0, x1, equal_var=False, nan_policy="omit")
+                except Exception:
+                    continue
 
-            tmp = tmp.loc[mask].copy()
-            y = tmp[target_col].astype(int)
-            X = tmp.drop(columns=[target_col])
+                rows.append((col, float(p)))
+                if p <= p_thr:
+                    passed.append(col)
 
-        # (2) 결측치 제거
-        tmp2 = pd.concat([X, y.rename(target_col)], axis=1).dropna()
-        y = tmp2[target_col].astype(int)
-        X = tmp2.drop(columns=[target_col])
+            ttest_df = (
+                pd.DataFrame(rows, columns=["feature", "p_value"])
+                .sort_values("p_value")
+                .reset_index(drop=True)
+            )
 
-        # (3) 원핫 인코딩
-        X_oh = pd.get_dummies(X, drop_first=True)
+            st.session_state["ttest_passed"] = passed
+            st.session_state["ttest_table"] = ttest_df
+            st.session_state["done_1"] = True
+            st.rerun()
 
-        # (4) ③에서 표준화할 "수치형 컬럼"은 원핫 이후 기준으로 다시 산출
-        scale_cols = X_oh.select_dtypes(include=[np.number]).columns.tolist()
+    # ✅ ① 결과는 항상 표시
+    if st.session_state.get("done_1", False):
+        passed = st.session_state.get("ttest_passed", [])
+        st.success(f"✅ ① 완료: 통과 feature {len(passed)}개")
+        st.markdown("### ✅ T-test 통과 feature 목록")
+        st.write(passed if len(passed) > 0 else "통과 feature 없음")
 
-        st.session_state["X_processed"] = X_oh
-        st.session_state["y_processed"] = y
-        st.session_state["scale_cols"] = scale_cols
-        st.session_state["scaler"] = None
+        with st.expander("p-value 결과표 보기(선택)"):
+            st.dataframe(
+                st.session_state.get("ttest_table", pd.DataFrame()),
+                use_container_width=True
+            )
 
-        st.session_state["done_2"] = True
-        st.rerun()
+    st.divider()
 
-# ✅ ② 결과 항상 표시
-if st.session_state.get("done_2", False):
+    # =========================================================
+    # ② 데이터 전처리 (버튼만 / IQR k=1.5 고정 / UI 없음)
+    # =========================================================
+    st.markdown("## ② 데이터 전처리")
+    st.caption("이상치 제거(IQR,k=1.5) + 결측치 제거 + 원핫 인코딩 (스케일링은 ③에서)")
+
+    if not st.session_state.get("done_1", False):
+        st.info("🔒 ① T-test를 완료하면 ②가 활성화됩니다.")
+        st.stop()
+
+    iqr_k = 1.5  # 고정 (설정 UI 없음)
+
+    if not st.session_state.get("done_2", False):
+        if st.button("데이터 전처리 실행"):
+            passed_num = st.session_state.get("ttest_passed", [])
+
+            # 수치형/범주형 분리
+            numeric_all = df.select_dtypes(include=[np.number]).columns.tolist()
+            cat_cols = [c for c in df.columns if (c not in numeric_all) and (c != target_col)]
+
+            # 전처리에 사용할 컬럼: (T-test 통과 수치형) + (전체 범주형)
+            use_cols = passed_num + cat_cols
+            if len(use_cols) == 0:
+                st.error("전처리에 사용할 feature가 없습니다.")
+                st.stop()
+
+            X = df[use_cols].copy()
+            y = df[target_col].astype(int).copy()
+
+            # (1) IQR 이상치 제거: passed 수치형에만 적용
+            if len(passed_num) > 0:
+                tmp = pd.concat([X, y.rename(target_col)], axis=1)
+                mask = pd.Series(True, index=tmp.index)
+
+                for c in passed_num:
+                    s = tmp[c]
+                    q1 = s.quantile(0.25)
+                    q3 = s.quantile(0.75)
+                    iqr = q3 - q1
+                    if pd.isna(iqr) or iqr == 0:
+                        continue
+                    lo = q1 - iqr_k * iqr
+                    hi = q3 + iqr_k * iqr
+                    mask &= s.between(lo, hi) | s.isna()
+
+                tmp = tmp.loc[mask].copy()
+                y = tmp[target_col].astype(int)
+                X = tmp.drop(columns=[target_col])
+
+            # (2) 결측치 제거 (요청: 제거)
+            tmp2 = pd.concat([X, y.rename(target_col)], axis=1).dropna()
+            y = tmp2[target_col].astype(int)
+            X = tmp2.drop(columns=[target_col])
+
+            # (3) 원핫 인코딩(1회만)
+            X_oh = pd.get_dummies(X, drop_first=True)
+
+            # (4) 표준화 대상 수치형 컬럼 기록 (③에서 Train 기준 적용)
+            scale_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+
+            st.session_state["X_processed"] = X_oh
+            st.session_state["y_processed"] = y
+            st.session_state["scale_cols"] = scale_cols
+            st.session_state["scaler"] = None
+
+            st.session_state["done_2"] = True
+            st.rerun()
+
+    # ✅ ② 결과 항상 표시
+    if st.session_state.get("done_2", False):
+        Xp = st.session_state["X_processed"]
+        yp = st.session_state["y_processed"]
+        st.success("✅ ② 완료: 전처리 결과가 저장되어 있습니다.")
+        st.write(f"전처리 후 X shape: {Xp.shape} / y length: {len(yp)}")
+
+    st.divider()
+
+    # =========================================================
+    # ③ 데이터 분할(8:2) + 표준화(Train 기준)
+    # =========================================================
+    st.markdown("## ③ 데이터 분할(8:2) + 표준화(Train 기준)")
+    st.caption("Train/Test 분할 후, Train 기준으로 표준화하여 데이터 누수를 방지합니다.")
+
+    if not st.session_state.get("done_2", False):
+        st.info("🔒 ② 전처리를 완료하면 ③이 활성화됩니다.")
+        st.stop()
+
     Xp = st.session_state["X_processed"]
     yp = st.session_state["y_processed"]
-    st.success("✅ ② 완료: 전처리 결과가 저장되어 있습니다.")
-    st.write(f"전처리 후 X shape: {Xp.shape} / y length: {len(yp)}")
+
+    test_size = 0.2  # 8:2 고정
+    st.write(f"분할 비율: Train {int((1-test_size)*100)}% / Test {int(test_size*100)}% (고정)")
+
+    feature_mode = st.radio(
+        "③에서 사용할 Feature Set",
+        options=["전처리 후 전체 변수 사용", "T-test 통과 변수만 사용(선택)"],
+        index=0
+    )
+
+    if not st.session_state.get("done_3", False):
+        if st.button("데이터 분할 + 스케일링(Train 기준) 저장"):
+            # A) 사용할 컬럼 확정
+            cols = list(Xp.columns)
+            passed = st.session_state.get("ttest_passed", [])
+
+            # 주의: passed는 '원래 수치형 컬럼명'이고, 원핫 후 컬럼명과 다를 수 있음.
+            # 그래서 "T-test 통과 변수만" 옵션은 실무적으로 불안정(원핫 컬럼 매칭 어려움).
+            # 그래도 요청대로 옵션은 유지하되, 원핫 후에 존재하는 컬럼만 남김.
+            if feature_mode.startswith("T-test") and len(passed) > 0:
+                cols = [c for c in cols if c in passed]
+                if len(cols) == 0:
+                    st.error("원핫 인코딩 후 컬럼명과 T-test 통과 변수명이 일치하지 않아 선택할 변수가 없습니다. '전체 변수 사용'으로 진행하세요.")
+                    st.stop()
+
+            X_use = Xp[cols].copy()
+
+            # B) 8:2 분할 (stratify 유지)
+            X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+                X_use, yp, test_size=test_size, random_state=42, stratify=yp
+            )
+
+            # C) 표준화(Train 기준)
+            scaler = StandardScaler()
+
+            scale_cols = st.session_state.get("scale_cols", [])
+            scale_cols = [c for c in scale_cols if c in X_train_raw.columns]  # 원핫 후에도 존재하는 수치형만
+
+            X_train = X_train_raw.copy()
+            X_test = X_test_raw.copy()
+
+            if len(scale_cols) > 0:
+                X_train[scale_cols] = scaler.fit_transform(X_train_raw[scale_cols])
+                X_test[scale_cols] = scaler.transform(X_test_raw[scale_cols])
+
+            # D) 저장
+            st.session_state["selected_cols"] = cols
+            st.session_state["X_train"] = X_train
+            st.session_state["X_test"] = X_test
+            st.session_state["y_train"] = y_train
+            st.session_state["y_test"] = y_test
+            st.session_state["scaler"] = scaler
+
+            # 혼선 방지: 기존 stepwise/logit 키 제거(있으면)
+            st.session_state.pop("logit_stepwise_model", None)
+            st.session_state.pop("proba_test", None)
+            st.session_state.pop("model", None)
+
+            st.session_state["done_3"] = True
+            st.rerun()
+
+    # ✅ ③ 결과 항상 표시
+    if st.session_state.get("done_3", False):
+        st.success("✅ ③ 완료: 8:2 분할 + Train 기준 표준화 결과가 저장되어 있습니다.")
+        st.write("선택 변수 수:", len(st.session_state["selected_cols"]))
+        st.write("Train shape:", st.session_state["X_train"].shape, "/ Test shape:", st.session_state["X_test"].shape)
+        with st.expander("선택 변수 전체 보기"):
+            st.write(st.session_state["selected_cols"])
+
 
 # ============================================================
 # 3) 모델링(신경망): MLP

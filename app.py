@@ -422,25 +422,93 @@ with tabs[1]:
         st.write("전처리 후 X shape:", X_oh.shape, " / y length:", len(y))
 
     # ========================================================
-    # STEP 3) Stepwise(전진선택법) + 8:2 분할
-    # ========================================================
-    st.markdown("## ③ Feature Selection (Stepwise Forward) + 데이터 분할(8:2)")
+# STEP 3) Feature Selection (L1 / Stepwise) + 8:2 분할
+# - 중요: Selector는 Train에서만 fit (데이터 누수 방지)
+# ========================================================
+st.markdown("## ③ Feature Selection + 데이터 분할(8:2)")
 
-    if "X_processed" not in st.session_state or "y_processed" not in st.session_state:
-        st.info("먼저 [데이터 전처리 실행]을 완료하세요.")
-        st.stop()
+if "X_processed" not in st.session_state or "y_processed" not in st.session_state:
+    st.info("먼저 [데이터 전처리 실행]을 완료하세요.")
+    st.stop()
+
+Xp = st.session_state["X_processed"]
+yp = st.session_state["y_processed"]
+
+method = st.radio(
+    "Feature Selection 방법 선택",
+    ["L1(Logistic) 추천", "Stepwise(전진선택)"],
+    horizontal=True
+)
+
+# 8:2 split 먼저 (권장: 누수 방지)
+X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+    Xp, yp, test_size=0.2, random_state=42, stratify=yp
+)
+
+st.write(f"분할 완료: Train {X_train_raw.shape} / Test {X_test_raw.shape}")
+
+if method == "L1(Logistic) 추천":
+    st.markdown("### ✅ L1(Logistic)로 변수 선택 (Train에서만 학습)")
+
+    # L1 강도 선택: CV로 자동 탐색 (안정적)
+    # class_weight='balanced'는 불균형 데이터에 유리
+    # Cs: 값이 클수록 규제가 약해짐(더 많은 변수 선택)
+    Cs = st.select_slider("규제 강도 범위(Cs)", options=[0.01, 0.1, 1.0, 10.0, 50.0, 100.0], value=10.0)
+
+    if st.button("L1 Feature Selection 실행 + 8:2 저장"):
+        # LogisticRegressionCV: Train에서 최적 C 선택
+        l1_cv = LogisticRegressionCV(
+            Cs=[0.01, 0.1, 1.0, 10.0, 50.0, 100.0],
+            cv=5,
+            penalty="l1",
+            solver="saga",
+            scoring="roc_auc",
+            max_iter=5000,
+            class_weight="balanced",
+            n_jobs=-1
+        )
+
+        l1_cv.fit(X_train_raw, y_train)
+
+        # non-zero 계수 변수 선택
+        coef = l1_cv.coef_.ravel()
+        selected_mask = np.abs(coef) > 1e-8
+        selected_cols = X_train_raw.columns[selected_mask].tolist()
+
+        if len(selected_cols) == 0:
+            st.warning("선택된 변수가 0개입니다. (규제가 너무 강함) Cs 범위를 키워보세요.")
+            st.stop()
+
+        # 선택된 변수로 train/test 재구성
+        X_train = X_train_raw[selected_cols].copy()
+        X_test = X_test_raw[selected_cols].copy()
+
+        # 세션 저장
+        st.session_state["selected_cols"] = selected_cols
+        st.session_state["X_train"] = X_train
+        st.session_state["X_test"] = X_test
+        st.session_state["y_train"] = y_train
+        st.session_state["y_test"] = y_test
+        st.session_state["l1_selector_model"] = l1_cv  # 선택 근거 모델 저장
+
+        st.success(f"L1 선택 완료: {len(selected_cols)}개 변수 선택")
+        st.write("선택된 변수(일부):", selected_cols[:30])
+        with st.expander("전체 선택 변수 보기"):
+            st.write(selected_cols)
+
+        st.caption("L1은 One-Hot 이후 고차원 변수에서도 안정적으로 변수 선택이 가능합니다.")
+
+else:
+    st.markdown("### ✅ Stepwise(전진선택)로 변수 선택 (Train에서만 수행)")
 
     p_enter = st.slider("Stepwise 진입 기준(p_enter)", 0.001, 0.50, 0.05, 0.001)
 
-    if st.button("Stepwise 실행 + 8:2 분할"):
-        Xp = st.session_state["X_processed"]
-        yp = st.session_state["y_processed"]
-
-        remaining = list(Xp.columns)
+    if st.button("Stepwise 실행 + 8:2 저장"):
+        remaining = list(X_train_raw.columns)
         selected = []
         final_model = None
 
-        # 전진선택법
+        # 전진선택: Train에서만
         for _ in range(len(remaining)):
             best_p = None
             best_var = None
@@ -448,9 +516,9 @@ with tabs[1]:
 
             for v in remaining:
                 cols_try = selected + [v]
-                X_const = sm.add_constant(Xp[cols_try], has_constant="add")
+                X_const = sm.add_constant(X_train_raw[cols_try], has_constant="add")
                 try:
-                    m = sm.Logit(yp, X_const).fit(disp=False)
+                    m = sm.Logit(y_train, X_const).fit(disp=False)
                     pval = float(m.pvalues.get(v, 1.0))
                 except Exception:
                     continue
@@ -468,19 +536,14 @@ with tabs[1]:
             final_model = best_model
 
         if len(selected) == 0:
-            st.warning("선택된 변수가 없습니다. p_enter를 완화하거나 전처리 설정을 조정하세요.")
+            st.warning("선택된 변수가 없습니다. p_enter를 완화하거나 L1 방법을 추천합니다.")
             st.stop()
 
-        # 8:2 분할
-        X_sel = Xp[selected].copy()
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_sel, yp,
-            test_size=0.2,
-            random_state=42,
-            stratify=yp
-        )
+        # 선택된 변수로 train/test 구성
+        X_train = X_train_raw[selected].copy()
+        X_test = X_test_raw[selected].copy()
 
-        # 세션 저장 (후속 모델 단계에서 사용)
+        # 세션 저장
         st.session_state["selected_cols"] = selected
         st.session_state["X_train"] = X_train
         st.session_state["X_test"] = X_test
@@ -488,14 +551,14 @@ with tabs[1]:
         st.session_state["y_test"] = y_test
         st.session_state["logit_stepwise_model"] = final_model
 
-        st.success(f"Stepwise 완료: 선택 변수 {len(selected)}개 / Train {X_train.shape} / Test {X_test.shape}")
-        st.markdown("### ✅ 선택된 변수")
-        st.write(selected)
-
-        # (선택) 요약 출력: 너무 길면 잘릴 수 있어서 앞부분만
+        st.success(f"Stepwise 완료: 선택 변수 {len(selected)}개")
+        st.write("선택 변수(일부):", selected[:30])
+        with st.expander("전체 선택 변수 보기"):
+            st.write(selected)
         if final_model is not None:
             with st.expander("Logit Summary 보기(선택)"):
                 st.text(str(final_model.summary())[:4000])
+
 
 
 

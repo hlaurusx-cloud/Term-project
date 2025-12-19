@@ -159,11 +159,6 @@ with tabs[0]:
     st.write("타깃 분포")
     st.dataframe(y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"), use_container_width=True)
 
-    # 결측치 요약
-    st.write("결측치 개수(상위 30개)")
-    miss = df.isna().sum().sort_values(ascending=False).head(30)
-    st.dataframe(miss.rename("missing_count").to_frame(), use_container_width=True)
-
     st.caption("해석 포인트: 타깃이 이진(0/1)인지 확인하고, 결측치/이상치/범주형 변수를 파악합니다.")
 
 # ============================================================

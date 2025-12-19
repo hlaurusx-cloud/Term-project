@@ -146,9 +146,6 @@ with tabs[0]:
     st.write("데이터 미리보기")
     st.dataframe(df.head(20), use_container_width=True)
 
-    st.write("컬럼 리스트")
-    st.code(", ".join(df.columns.tolist()))
-
     st.write("기초 통계(수치형)")
     st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
 

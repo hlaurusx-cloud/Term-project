@@ -643,24 +643,25 @@ with tabs[2]:
 with tabs[3]:
     st.subheader("4) 모델 평가 및 PD Segmentation")
 
-    # ======================================================
-    # ✅ 세그멘테이션 호출 전 가드 (⭐你找的就是这个)
-    # ======================================================
+    # ------------------------------------------------------
+    # Guard: 예측확률 존재 여부
+    # ------------------------------------------------------
     required = ["y_test", "proba_test"]
-    missing = [k for k in required if k not in st.session_state]
-
+    missing = [k for k in required if k not in st.session_state or st.session_state.get(k) is None]
     if missing:
         st.warning("먼저 MLP 모델을 학습하여 예측확률(PD)을 생성하세요.")
+        st.write("누락된 키:", missing)
         st.stop()
 
-    y_test = st.session_state["y_test"]
-    proba_test = st.session_state["proba_test"]
-
-    # 타입 안전 가드
     import numpy as np
-    y_test = np.asarray(y_test).ravel()
-    proba_test = np.asarray(proba_test).ravel()
+    import pandas as pd
 
+    y_test = np.asarray(st.session_state["y_test"]).ravel()
+    proba_test = np.asarray(st.session_state["proba_test"]).ravel()
+
+    # ------------------------------------------------------
+    # Type/shape safety
+    # ------------------------------------------------------
     if len(y_test) != len(proba_test):
         st.error(
             f"y_test({len(y_test)})와 proba_test({len(proba_test)}) 길이가 다릅니다.\n"
@@ -668,29 +669,122 @@ with tabs[3]:
         )
         st.stop()
 
+    # proba 범위 체크
+    if np.any(np.isnan(proba_test)) or np.any(np.isinf(proba_test)):
+        st.error("proba_test에 NaN 또는 Inf가 포함되어 있습니다. 모델을 다시 학습하세요.")
+        st.stop()
 
-    # ======================================================
-    # Segmentation 설정
-    # ======================================================
+    # 확률 클리핑(아주 드문 수치문제 방지)
+    proba_test = np.clip(proba_test, 1e-12, 1 - 1e-12)
+
+    # ------------------------------------------------------
+    # 4-A) 성능 평가(지표)
+    # ------------------------------------------------------
+    st.markdown("## ✅ 4-A) 모델 성능 평가")
+
+    from sklearn.metrics import (
+        roc_auc_score, average_precision_score,
+        accuracy_score, precision_score, recall_score, f1_score,
+        confusion_matrix, classification_report,
+        roc_curve, precision_recall_curve
+    )
+
+    # Threshold 설정
+    thr = st.slider("분류 임계값(Threshold)", 0.05, 0.95, 0.50, 0.01)
+    y_pred = (proba_test >= thr).astype(int)
+
+    # 주요 지표
+    auc = roc_auc_score(y_test, proba_test)
+    pr_auc = average_precision_score(y_test, proba_test)
+
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred, zero_division=0)
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("ROC-AUC", f"{auc:.4f}")
+    c2.metric("PR-AUC(AP)", f"{pr_auc:.4f}")
+    c3.metric("Accuracy", f"{acc:.4f}")
+    c4.metric("Precision", f"{prec:.4f}")
+    c5.metric("Recall", f"{rec:.4f}")
+    c6.metric("F1", f"{f1:.4f}")
+
+    # Confusion Matrix
+    st.markdown("### Confusion Matrix")
+    cm = confusion_matrix(y_test, y_pred)
+    cm_df = pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Pred 0", "Pred 1"])
+    st.dataframe(cm_df, use_container_width=True)
+
+    # Classification report
+    with st.expander("Classification Report (상세)"):
+        st.text(classification_report(y_test, y_pred, digits=4))
+
+    # ROC Curve / PR Curve
+    st.markdown("### ROC / PR Curve")
+    fpr, tpr, _ = roc_curve(y_test, proba_test)
+    pr_p, pr_r, _ = precision_recall_curve(y_test, proba_test)
+
+    import matplotlib.pyplot as plt
+
+    colA, colB = st.columns(2)
+    with colA:
+        fig1 = plt.figure()
+        ax1 = fig1.add_subplot(111)
+        ax1.plot(fpr, tpr)
+        ax1.plot([0, 1], [0, 1], linestyle="--")
+        ax1.set_xlabel("False Positive Rate")
+        ax1.set_ylabel("True Positive Rate")
+        ax1.set_title(f"ROC Curve (AUC={auc:.4f})")
+        st.pyplot(fig1, clear_figure=True)
+
+    with colB:
+        fig2 = plt.figure()
+        ax2 = fig2.add_subplot(111)
+        ax2.plot(pr_r, pr_p)
+        ax2.set_xlabel("Recall")
+        ax2.set_ylabel("Precision")
+        ax2.set_title(f"PR Curve (AP={pr_auc:.4f})")
+        st.pyplot(fig2, clear_figure=True)
+
+    # ------------------------------------------------------
+    # (선택) KS 계산/표시 — 금융/신용평가에서 가산점
+    # ------------------------------------------------------
+    with st.expander("KS (선택)"):
+        # KS = max(TPR - FPR)
+        ks = float(np.max(tpr - fpr))
+        st.write(f"KS Statistic: **{ks:.4f}**")
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # 4-B) PD Segmentation
+    # ------------------------------------------------------
+    st.markdown("## ✅ 4-B) PD Segmentation (Grade Table)")
+
     st.markdown("### 🔹 PD Segmentation 설정")
     n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1)
 
-    # ======================================================
-    # Segmentation 실행
-    # ======================================================
-    agg, raw = segmentation_table(
-        y_test,
-        proba_test,
-        n_bins=int(n_bins)
-    )
+    # Segmentation 실행 (기존 함수 사용)
+    try:
+        agg, raw = segmentation_table(y_test=y_test, proba=proba_test, n_bins=int(n_bins))
+    except TypeError:
+        # 네 함수가 positional만 받는 경우 대비
+        agg, raw = segmentation_table(y_test, proba_test, n_bins=int(n_bins))
 
     st.success("PD Segmentation Table 생성 완료")
 
-    # ======================================================
     # 결과 표시
-    # ======================================================
     st.markdown("### 📊 PD Segmentation Table")
     st.dataframe(agg, use_container_width=True)
 
     st.markdown("### 📄 개별 관측치 (샘플)")
     st.dataframe(raw.head(20), use_container_width=True)
+
+    # (권장) 다운로드
+    with st.expander("CSV 다운로드"):
+        st.download_button("Segmentation(agg) CSV 다운로드", data=agg.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="pd_segmentation_agg.csv", mime="text/csv")
+        st.download_button("Segmentation(raw) CSV 다운로드", data=raw.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="pd_segmentation_raw.csv", mime="text/csv")
+container_width=True)

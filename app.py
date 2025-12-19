@@ -171,10 +171,8 @@ with tabs[0]:
 
     # 1️⃣ 타깃 변수 분포 (Count + 불균형 확인)
     st.markdown("### 1️⃣ 타깃 변수 분포")
-    st.dataframe(
-        y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
-        use_container_width=True
-    )
+    target_cnt = y_raw.value_counts().sort_index()
+    target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
 
     fig, ax = plt.subplots()
     ax.bar(target_cnt.index.astype(str), target_cnt.values)

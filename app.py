@@ -161,38 +161,38 @@ with tabs[0]:
         disabled=True  # ✅ 선택 기능만 제거
     )
     # 타깃 변수 설정
-y_raw = df[target_col]
+    y_raw = df[target_col]
 
 # ------------------------------------------------------------
 # EDA 시각화
 # ------------------------------------------------------------
-st.markdown("## 📊 EDA 시각화")
+    st.markdown("## 📊 EDA 시각화")
 
 # 1️⃣ 타깃 변수 분포
-st.markdown("### 1️⃣ 타깃 변수 분포")
+    st.markdown("### 1️⃣ 타깃 변수 분포")
+    
+    target_cnt = y_raw.value_counts().sort_index()
+    target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
 
-target_cnt = y_raw.value_counts().sort_index()
-target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
+    fig, ax = plt.subplots()
+    ax.bar(target_cnt.index.astype(str), target_cnt.values)
+    ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
+    ax.set_ylabel("Count")
+    ax.set_title("Target Distribution")
+    st.pyplot(fig)
 
-fig, ax = plt.subplots()
-ax.bar(target_cnt.index.astype(str), target_cnt.values)
-ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
-ax.set_ylabel("Count")
-ax.set_title("Target Distribution")
-st.pyplot(fig)
+    st.dataframe(
+        pd.DataFrame({
+            "count": target_cnt,
+            "ratio(%)": target_ratio
+        }),
+        use_container_width=True
+    )
 
-st.dataframe(
-    pd.DataFrame({
-        "count": target_cnt,
-        "ratio(%)": target_ratio
-    }),
-    use_container_width=True
-)
-
-st.caption(
-    "해석: 타깃 클래스가 불균형한 경우, "
-    "정확도(Accuracy)만으로 모델 성능을 평가하면 왜곡될 수 있음"
-)
+    st.caption(
+        "해석: 타깃 클래스가 불균형한 경우, "
+        "정확도(Accuracy)만으로 모델 성능을 평가하면 왜곡될 수 있음"
+    )
 
 
     # 2️⃣ 수치형 변수 선택 → 타깃별 분포 비교(Boxplot)

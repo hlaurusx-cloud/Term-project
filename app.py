@@ -263,19 +263,10 @@ with tabs[0]:
 
 # ============================================================
 # 2) 데이터 전처리 (Preprocessing)
-# 목적:
-#  - 모델 학습 전에 원시 데이터를 분석에 적합한 형태로 변환
-#  - 결측치 처리, 범주형 인코딩, 수치형 스케일링
-#  - 학습용/평가용 데이터 분할
 # ============================================================
 
 with tabs[1]:
     st.subheader("2) 데이터 전처리")
-    st.markdown(
-        """
-        **데이터 전처리 단계에서는 다음과 같은 작업을 수행합니다.**
-        """
-    )
 
     # --------------------------------------------------------
     # (1) 타깃 변수 확인
@@ -285,169 +276,138 @@ with tabs[1]:
         st.warning("먼저 [데이터 이해(EDA)] 단계에서 타깃 변수를 확인해야 합니다.")
         st.stop()
 
-    st.info(f"현재 설정된 타깃 변수(Y): **{target_col}**")
+    st.info(f"현재 설정된 타깃 변수(Y): {target_col}")
 
-    # --------------------------------------------------------
-    # (2) 설명 변수(X) 선택
-    # --------------------------------------------------------
-    st.markdown("### 🔹 설명 변수(X) 선택")
+    # ========================================================
+    # STEP 1. T-test 기반 변수 사전 선택
+    # ========================================================
+    st.markdown("## ① T-test 기반 변수 사전 선택")
 
-    st.markdown(
-        """
-        - 분석에 사용할 설명 변수를 선택합니다.  
-        - 기본적으로 신용평가 모델에서 자주 사용되는 변수들을 추천합니다.  
-        - 필요 시 사용자가 직접 추가/제거할 수 있습니다.
-        """
-    )
+    num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
+    num_cols_all = [c for c in num_cols_all if c != target_col]
 
-    suggested = [
-        "credit.policy", "purpose", "int.rate", "installment",
-        "log.annual.inc", "dti", "fico", "days.with.cr.line",
-        "revol.bal", "revol.util", "inq.last.6mths",
-        "delinq.2yrs", "pub.rec"
-    ]
-    suggested = [c for c in suggested if c in df.columns]
+    if st.button("T-test 실행 (p ≤ 0.5)"):
+        ttest_result = []
+        passed_cols = []
 
-    default_features = [c for c in df.columns if c != target_col]
-    default_select = suggested if len(suggested) > 0 else default_features
+        g0 = df[df[target_col] == 0]
+        g1 = df[df[target_col] == 1]
 
-    feature_cols = st.multiselect(
-        "모델 학습에 사용할 설명 변수(X)",
-        options=default_features,
-        default=default_select
-    )
+        for col in num_cols_all:
+            x0 = g0[col].dropna()
+            x1 = g1[col].dropna()
 
-    if len(feature_cols) == 0:
-        st.warning("최소 1개 이상의 설명 변수를 선택해야 합니다.")
+            if len(x0) < 2 or len(x1) < 2:
+                continue
+
+            stat, p = stats.ttest_ind(x0, x1, equal_var=False)
+            ttest_result.append((col, p))
+
+            if p <= 0.5:
+                passed_cols.append(col)
+
+        ttest_df = pd.DataFrame(ttest_result, columns=["feature", "p_value"]) \
+                      .sort_values("p_value")
+
+        st.session_state.ttest_passed = passed_cols
+        st.session_state.ttest_table = ttest_df
+
+        st.success(f"T-test 완료: {len(passed_cols)}개 변수 통과")
+        st.dataframe(ttest_df, use_container_width=True)
+
+    # ========================================================
+    # STEP 2. 데이터 전처리
+    # ========================================================
+    st.markdown("## ② 데이터 전처리")
+
+    if "ttest_passed" not in st.session_state:
+        st.info("먼저 T-test를 실행하세요.")
         st.stop()
 
-    # --------------------------------------------------------
-    # (3) 데이터 분할 옵션 설정
-    # --------------------------------------------------------
-    st.markdown("### 🔹 학습 / 평가 데이터 분할 설정")
+    if st.button("데이터 전처리 실행"):
+        num_cols = st.session_state.ttest_passed
+        cat_cols = [c for c in df.columns if c not in num_cols + [target_col]]
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        test_size = st.slider(
-            "Test 데이터 비율",
-            0.1, 0.5, 0.2, 0.05,
-            help="전체 데이터 중 평가(Test)에 사용할 비율"
-        )
-    with col2:
-        random_state = st.number_input(
-            "random_state",
-            0, 9999, 42, 1,
-            help="재현성을 위한 난수 시드 값"
-        )
-    with col3:
-        stratify = st.checkbox(
-            "Stratify(Y) 적용",
-            value=True,
-            help="타깃 클래스 비율(0/1)을 Train/Test에 동일하게 유지"
-        )
+        X = df[num_cols + cat_cols].copy()
+        y = df[target_col].astype(int)
 
-    # --------------------------------------------------------
-    # (4) 전처리 + 분할 실행
-    # --------------------------------------------------------
-    if st.button("전처리 + 데이터 분할 실행"):
-        st.markdown("### 🔹 전처리 수행 결과")
+        # 이상치 제거 (IQR)
+        for col in num_cols:
+            q1, q3 = X[col].quantile([0.25, 0.75])
+            iqr = q3 - q1
+            X = X[(X[col] >= q1 - 1.5 * iqr) & (X[col] <= q3 + 1.5 * iqr)]
 
-        # X, y 분리
-        X = df[feature_cols].copy()
-        y = df[target_col].astype(int).values
+        y = y.loc[X.index]
 
-        st.write("원본 데이터 크기:", X.shape)
+        # 결측치 제거
+        data = pd.concat([X, y], axis=1).dropna()
+        X = data.drop(columns=[target_col])
+        y = data[target_col]
 
-        # ----------------------------------------------------
-        # 수치형 / 범주형 변수 구분
-        # ----------------------------------------------------
-        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        cat_cols = [c for c in X.columns if c not in num_cols]
+        # 원핫 인코딩
+        X = pd.get_dummies(X, drop_first=True)
 
-        st.write("수치형 변수 개수:", len(num_cols))
-        st.write("범주형 변수 개수:", len(cat_cols))
+        # 스케일링
+        scaler = StandardScaler()
+        X[num_cols] = scaler.fit_transform(X[num_cols])
 
-        # ----------------------------------------------------
-        # 전처리 파이프라인 정의
-        # ----------------------------------------------------
-        st.markdown(
-            """
-            **전처리 방법 설명**
+        st.session_state.X_processed = X
+        st.session_state.y_processed = y
 
-            - 수치형 변수  
-              · 결측값 → 중앙값(median)으로 대체  
-              · 변수 간 단위 차이 제거 → 표준화(Standardization)
+        st.success("데이터 전처리 완료")
+        st.write("전처리 후 데이터 크기:", X.shape)
 
-            - 범주형 변수  
-              · 결측값 → 최빈값으로 대체  
-              · One-Hot Encoding으로 숫자화
-            """
-        )
+    # ========================================================
+    # STEP 3. Feature Selection + 데이터 분할
+    # ========================================================
+    st.markdown("## ③ Feature Selection + 데이터 분할")
 
-        numeric_transformer = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler())
-        ])
+    if "X_processed" not in st.session_state:
+        st.info("먼저 데이터 전처리를 실행하세요.")
+        st.stop()
 
-        categorical_transformer = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore"))
-        ])
+    if st.button("Stepwise + 데이터 분할 (8:2)"):
+        X = st.session_state.X_processed
+        y = st.session_state.y_processed
 
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ("num", numeric_transformer, num_cols),
-                ("cat", categorical_transformer, cat_cols)
-            ],
-            remainder="drop"
-        )
+        remaining = list(X.columns)
+        selected = []
 
-        # ----------------------------------------------------
-        # 데이터 분할
-        # ----------------------------------------------------
-        strat_y = y if stratify else None
+        while remaining:
+            best_p = None
+            best_var = None
+
+            for var in remaining:
+                try:
+                    X_const = sm.add_constant(X[selected + [var]])
+                    model = sm.Logit(y, X_const).fit(disp=False)
+                    p = model.pvalues[var]
+                except:
+                    continue
+
+                if best_p is None or p < best_p:
+                    best_p = p
+                    best_var = var
+
+            if best_p is None or best_p > 0.05:
+                break
+
+            selected.append(best_var)
+            remaining.remove(best_var)
+
+        X_final = X[selected]
 
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
-            test_size=float(test_size),
-            random_state=int(random_state),
-            stratify=strat_y
+            X_final, y, test_size=0.2, random_state=42, stratify=y
         )
 
-        # ----------------------------------------------------
-        # 전처리 적용
-        # ----------------------------------------------------
-        X_train_p = preprocessor.fit_transform(X_train)
-        X_test_p = preprocessor.transform(X_test)
-
-        # ----------------------------------------------------
-        # 세션 상태 저장
-        # ----------------------------------------------------
-        st.session_state.feature_cols = feature_cols
-        st.session_state.preprocessor = preprocessor
-        st.session_state.X_train_p = X_train_p
-        st.session_state.X_test_p = X_test_p
+        st.session_state.X_train = X_train
+        st.session_state.X_test = X_test
         st.session_state.y_train = y_train
         st.session_state.y_test = y_test
 
-        st.session_state.model = None
-        st.session_state.proba_test = None
-
-        # ----------------------------------------------------
-        # 결과 요약
-        # ----------------------------------------------------
-        st.success("전처리 및 데이터 분할이 완료되었습니다.")
-
-        st.write(
-            f"""
-            - Train 데이터 크기: {X_train_p.shape}  
-            - Test 데이터 크기: {X_test_p.shape}
-            """
-        )
-
-        st.caption(
-            "이제 전처리된 데이터를 이용하여 로지스틱 회귀, 의사결정나무 등 모델 학습을 진행할 수 있습니다."
-        )
+        st.success(f"Stepwise 완료: 선택 변수 {len(selected)}개")
+        st.write("선택된 변수:", selected)
 
 
 

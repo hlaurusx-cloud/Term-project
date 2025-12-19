@@ -833,8 +833,10 @@ with tabs[4]:
 
     st.markdown(
         """
-#### 📌 Risk Segment 구조(고정, 30/40/30)
-"""
+        - **Grade 개수**: 14
+        - **등급 분할 방식**: 분위수(qcut) 기반  
+        - **📌 Risk Segment 구조(고정, 30/40/30)
+        """
     )
 
     df_seg = pd.DataFrame({"y": y_test, "pd": proba_test})

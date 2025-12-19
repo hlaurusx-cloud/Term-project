@@ -291,9 +291,9 @@ with tabs[0]:
 
 # ============================================================
 # 2) 데이터 전처리 (Wizard-like / 단계 고정형)
-# ① T-test (p<=0.5) -> 통과 feature만 표시
+# ① T-test (p<=0.05) -> 통과 feature만 표시
 # ② 전처리 버튼 -> 이상치/결측치 제거 + 원핫 + 스케일링
-# ③ Feature Selection -> Stepwise(전진선택)만 + 8:2 분할
+# ③ 데이터 분할(8:2) + Train 기준 표준화
 # ============================================================
 
 with tabs[1]:
@@ -326,14 +326,14 @@ with tabs[1]:
     # ① T-test
     # =========================================================
     st.markdown("## ① T-test 기반 Feature 1차 선별")
-    st.caption("수치형 변수만, not.fully.paid(0/1) 기준, p-value ≤ 0.5 통과")
+    st.caption("수치형 변수만, not.fully.paid(0/1) 기준, p-value ≤ 0.05 통과")
 
-    p_thr = 0.5
+    p_thr = 0.05
     num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
     num_cols_all = [c for c in num_cols_all if c != target_col]
 
     if not st.session_state["done_1"]:
-        if st.button("T-test 실행 (p ≤ 0.5)"):
+        if st.button("T-test 실행 (p ≤ 0.05)"):
             g0 = df[df[target_col] == 0]
             g1 = df[df[target_col] == 1]
 
@@ -384,9 +384,7 @@ with tabs[1]:
     if not st.session_state.get("done_1", False):
         st.info("🔒 ① T-test를 완료하면 ②가 활성화됩니다.")
         st.stop()
-
-    iqr_k = st.slider("IQR 이상치 제거 강도(k)", 1.0, 3.0, 1.5, 0.1)
-
+    iqr_k = 1.5  # IQR 이상치 제거 강도(k) 고정 (UI 설정 제거)
     if not st.session_state.get("done_2", False):
         if st.button("데이터 전처리 실행"):
             passed_num = st.session_state.get("ttest_passed", [])
@@ -432,17 +430,20 @@ with tabs[1]:
             # (3) 원핫 인코딩
             X_oh = pd.get_dummies(X, drop_first=True)
 
-            # (4) 스케일링: 수치형 passed 변수만
-            scaler = StandardScaler()
-            scale_cols = [c for c in X_oh.columns if c in passed_num]
-            if len(scale_cols) > 0:
-                X_oh[scale_cols] = scaler.fit_transform(X_oh[scale_cols])
+            # (3) 원핫 인코딩
+            X_oh = pd.get_dummies(X, drop_first=True)
+
+            # (4) 스케일링은 ③ 단계(Train/Test 분할 이후)에서 수행
+            #     - 데이터 누수 방지(MLP/신경망 학습에 필수)
+            scale_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
             st.session_state["X_processed"] = X_oh
             st.session_state["y_processed"] = y
-            st.session_state["scaler"] = scaler
+            st.session_state["scale_cols"] = scale_cols
+            st.session_state["scaler"] = None
 
             st.session_state["done_2"] = True
+            st.rerun()
             st.rerun()
 
     # ✅ ② 결과 항상 표시
@@ -455,10 +456,10 @@ with tabs[1]:
     st.divider()
 
     # =========================================================
-    # ③ Feature Selection + 8:2 분할 (Stepwise Forward ONLY)
+    # ③ 데이터 분할(8:2) + 표준화(Train 기준)
     # =========================================================
-    st.markdown("## ③ Feature Selection + 데이터 분할(8:2)")
-    st.caption("Train에서만 전진선택법을 수행하여 데이터 누수를 방지합니다.")
+    st.markdown("## ③ 데이터 분할(8:2) + 표준화(Train 기준)")
+    st.caption("Train/Test 분할 후, Train 기준으로 표준화하여 데이터 누수를 방지합니다.")
 
     if not st.session_state.get("done_2", False):
         st.info("🔒 ② 전처리를 완료하면 ③이 활성화됩니다.")
@@ -473,57 +474,64 @@ with tabs[1]:
     )
     st.write(f"분할 완료: Train {X_train_raw.shape} / Test {X_test_raw.shape}")
 
-    p_enter = st.slider("Stepwise 진입 기준(p_enter)", 0.001, 0.50, 0.05, 0.001)
+    test_size = 0.2  # 8:2 고정
+    st.write(f"분할 비율: Train {int((1-test_size)*100)}% / Test {int(test_size*100)}% (고정)")
+
+    # 어떤 feature를 사용할지 선택 (MLP 친화)
+    feature_mode = st.radio(
+        "③에서 사용할 Feature Set",
+        options=["전처리 후 전체 변수 사용", "T-test 통과 변수만 사용(선택)"],
+        index=0
+    )
 
     if not st.session_state.get("done_3", False):
-        if st.button("Stepwise 실행 + 8:2 저장"):
-            remaining = list(X_train_raw.columns)
-            selected = []
-            final_model = None
+        if st.button("데이터 분할 + 스케일링(Train 기준) 저장"):
+            # -----------------------------
+            # A. 사용할 컬럼 확정
+            # -----------------------------
+            cols = list(Xp.columns)
+            passed = st.session_state.get("ttest_passed", [])
+            if feature_mode.startswith("T-test") and len(passed) > 0:
+                cols = [c for c in cols if c in passed]
+                if len(cols) == 0:
+                    st.error("T-test 통과 변수가 없습니다. '전체 변수 사용'으로 진행하세요.")
+                    st.stop()
 
-            for _ in range(len(remaining)):
-                best_p = None
-                best_var = None
-                best_model = None
+            # -----------------------------
+            # B. 8:2 분할 (stratify 유지)
+            # -----------------------------
+            X_use = Xp[cols].copy()
+            X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+                X_use, yp, test_size=test_size, random_state=42, stratify=yp
+            )
 
-                for v in remaining:
-                    cols_try = selected + [v]
-                    X_const = sm.add_constant(X_train_raw[cols_try], has_constant="add")
-                    try:
-                        m = sm.Logit(y_train, X_const).fit(disp=False)
-                        pval = float(m.pvalues.get(v, 1.0))
-                    except Exception:
-                        continue
+            # -----------------------------
+            # C. 표준화(Train 기준) — MLP 필수 전처리
+            # -----------------------------
+            scaler = StandardScaler()
+            scale_cols = st.session_state.get("scale_cols", [])
+            # 전처리 이후에도 이름이 유지되는 수치형 컬럼만 스케일링
+            scale_cols = [c for c in scale_cols if c in X_train_raw.columns]
 
-                    if best_p is None or pval < best_p:
-                        best_p = pval
-                        best_var = v
-                        best_model = m
+            X_train = X_train_raw.copy()
+            X_test = X_test_raw.copy()
+            if len(scale_cols) > 0:
+                X_train[scale_cols] = scaler.fit_transform(X_train_raw[scale_cols])
+                X_test[scale_cols] = scaler.transform(X_test_raw[scale_cols])
 
-                if best_var is None or best_p is None or best_p > p_enter:
-                    break
-                    
-
-                selected.append(best_var)
-                remaining.remove(best_var)
-                final_model = best_model
-
-            if len(selected) == 0:
-                st.warning("선택된 변수가 없습니다. p_enter를 완화하세요.")
-                st.stop()
-
-            # 선택된 변수로 train/test 구성
-            X_train = X_train_raw[selected].copy()
-            X_test = X_test_raw[selected].copy()
-
-            # ✅ 다음 단계에서 AttributeError 방지: 반드시 key로 저장
-            st.session_state["selected_cols"] = selected
+            # -----------------------------
+            # D. 저장
+            # -----------------------------
+            st.session_state["selected_cols"] = cols
             st.session_state["X_train"] = X_train
             st.session_state["X_test"] = X_test
             st.session_state["y_train"] = y_train
             st.session_state["y_test"] = y_test
-            st.session_state["logit_stepwise_model"] = final_model
-            
+            st.session_state["scaler"] = scaler
+
+            # Logit/Stepwise 관련 key 제거(혼선 방지)
+            st.session_state.pop("logit_stepwise_model", None)
+
             st.session_state.pop("proba_test", None)
             st.session_state.pop("model", None)
 
@@ -532,7 +540,7 @@ with tabs[1]:
 
     # ✅ ③ 결과 항상 표시
     if st.session_state.get("done_3", False):
-        st.success("✅ ③ 완료: Stepwise + 8:2 분할 결과가 저장되어 있습니다.")
+        st.success("✅ ③ 완료: 8:2 분할 + Train 기준 표준화 분할 결과가 저장되어 있습니다.")
         st.write("선택 변수 수:", len(st.session_state["selected_cols"]))
         with st.expander("선택 변수 전체 보기"):
             st.write(st.session_state["selected_cols"])
@@ -540,19 +548,19 @@ with tabs[1]:
 
 # ============================================================
 # 3) 모델링(신경망): MLP
-# Stepwise(③) 결과만 사용
+# ③ 단계(데이터 분할) 결과만 사용
 # ============================================================
 with tabs[2]:
     st.subheader("3) 모델링(신경망): MLP 학습 및 예측확률(PD) 생성")
 
     # --------------------------------------------------------
-    # 가드: Stepwise 완료 여부
+    # 가드: ③ 완료 여부
     # --------------------------------------------------------
     required = ["X_train", "X_test", "y_train", "y_test"]
     missing = [k for k in required if k not in st.session_state]
 
     if missing:
-        st.info("먼저 [② 전처리 → ③ Stepwise]를 완료하세요.")
+        st.info("먼저 [② 전처리 → ③ 데이터 분할]를 완료하세요.")
         st.stop()
 
     # --------------------------------------------------------
@@ -651,7 +659,7 @@ with tabs[3]:
     if len(y_test) != len(proba_test):
         st.error(
             f"y_test({len(y_test)})와 proba_test({len(proba_test)}) 길이가 다릅니다.\n"
-            "③ Stepwise 이후 MLP를 다시 학습하세요."
+            "③(분할/표준화) 이후 MLP를 다시 학습하세요."
         )
         st.stop()
 

@@ -824,12 +824,12 @@ with tabs[3]:
         proba_test = np.clip(proba_test, 1e-12, 1 - 1e-12)
     
         # --------------------------------------------------------
-        # A) Grade 설정
+        # A) Grade 설정 + Risk Segment 비율 설정(한 번만)
         # --------------------------------------------------------
-        st.markdown("### 5-A) PD 기반 고객 등급화(Grade) 설정")
-    
-       n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1, key="seg5_n_bins")
-    
+        st.markdown("### 5-A) PD 기반 고객 등급화(Grade) + Risk Segment 설정")
+        
+        n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1, key="seg5_n_bins")
+        
         method = st.radio(
             "등급 분할 방식",
             ["분위수(qcut) 기반(추천)", "동일 구간(cut) 기반"],
@@ -837,12 +837,14 @@ with tabs[3]:
             key="seg5_method"
         )
         
-        low_pct = st.slider("Low Risk 비중(%)", 10, 45, 30, 1, key="seg5_low_pct")
-        high_pct = st.slider("High Risk 비중(%)", 10, 45, 30, 1, key="seg5_high_pct")
-    
-    
+        c1, c2 = st.columns(2)
+        with c1:
+            low_pct = st.slider("Low Risk 비중(%)", 10, 45, 30, 1, key="seg5_low_pct")
+        with c2:
+            high_pct = st.slider("High Risk 비중(%)", 10, 45, 30, 1, key="seg5_high_pct")
+        
         df_seg = pd.DataFrame({"y": y_test, "pd": proba_test})
-    
+        
         # Grade 생성 (낮은 PD → 낮은 Grade)
         try:
             if method.startswith("분위수"):
@@ -853,7 +855,8 @@ with tabs[3]:
         except Exception as e:
             st.error(f"Grade 생성 실패: {e}")
             st.stop()
-    
+
+
         # --------------------------------------------------------
         # B) Grade Summary (보고서용 핵심 표)
         # --------------------------------------------------------

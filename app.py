@@ -137,31 +137,46 @@ if df is None:
     st.info("좌측 사이드바에서 CSV 파일을 업로드하세요.")
     st.stop()
 
-# ============================================================
+# # ============================================================
 # 1) 데이터 이해(EDA)
 # ============================================================
 with tabs[0]:
     st.subheader("1) 데이터 탐색(EDA): 변수 확인, 기초통계, 타깃 분포")
 
     st.write("데이터 미리보기")
-    st.dataframe(df.head(20), use_container_width=True)
-
+    st.dataframe(df.head(5), use_container_width=True)
 
     st.write("기초 통계(수치형)")
     st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
 
-    # 타깃 선택
-    default_target = "not.fully.paid" if "not.fully.paid" in df.columns else df.columns[-1]
-    target_col = st.selectbox("타깃(Y) 컬럼 선택", options=df.columns.tolist(), index=df.columns.tolist().index(default_target))
-    st.session_state.target_col = target_col
+    # --------------------------------------------------------
+    # 타깃 변수 고정
+    # --------------------------------------------------------
+    TARGET = "not.fully.paid"
+
+    if TARGET not in df.columns:
+        st.error(f"❌ 타깃 변수 '{TARGET}' 컬럼이 데이터에 없습니다.")
+        st.stop()
+
+    st.session_state.target_col = TARGET
+
+    st.info(f"🎯 타깃 변수(Y)는 **'{TARGET}'** 로 고정되어 있습니다.")
 
     # 타깃 분포
-    y_raw = df[target_col]
-    st.write("타깃 분포")
-    st.dataframe(y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"), use_container_width=True)
+    st.write("타깃 분포 (0 = 정상, 1 = 부실)")
+    y_raw = df[TARGET]
+    st.dataframe(
+        y_raw.value_counts(dropna=False)
+        .rename_axis("값")
+        .to_frame("빈도"),
+        use_container_width=True
+    )
 
+    st.caption(
+        "해석 포인트: 타깃 변수 not.fully.paid는 대출 미상환 여부를 나타내는 이진 변수로, "
+        "본 연구에서는 이를 부실 여부(Y)로 정의한다."
+    )
 
-    st.caption("해석 포인트: 타깃이 이진(0/1)인지 확인하고, 결측치/이상치/범주형 변수를 파악합니다.")
 
 # ============================================================
 # 2) 데이터 전처리

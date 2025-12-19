@@ -261,16 +261,22 @@ with tabs[0]:
         st.info("상관관계를 계산할 수 있는 수치형 변수가 충분하지 않습니다.")
 
 
+# ============================================================
+# 2) 데이터 전처리 (Wizard-like / 단계 고정형)
+# ① T-test (p<=0.5) -> 통과 feature만 표시
+# ② 전처리 버튼 -> 이상치/결측치 제거 + 원핫 + 스케일링
+# ③ Feature Selection -> Stepwise(전진선택)만 + 8:2 분할
+# ============================================================
+
 with tabs[1]:
     st.subheader("2) 데이터 전처리")
 
     # -----------------------------
-    # 状态初始化（只做逻辑，不显示“3/3”）
+    # 상태 초기화 (Reset 버튼 없음)
     # -----------------------------
-    if "done_1" not in st.session_state: st.session_state.done_1 = False
-    if "done_2" not in st.session_state: st.session_state.done_2 = False
-    if "done_3" not in st.session_state: st.session_state.done_3 = False
-
+    if "done_1" not in st.session_state: st.session_state["done_1"] = False
+    if "done_2" not in st.session_state: st.session_state["done_2"] = False
+    if "done_3" not in st.session_state: st.session_state["done_3"] = False
 
     # -----------------------------
     # 타깃 확인
@@ -279,8 +285,12 @@ with tabs[1]:
     if target_col is None:
         st.warning("먼저 [EDA] 탭에서 타깃 변수를 설정해야 합니다.")
         st.stop()
-    if target_col != "not.fully.paid":
-        target_col = "not.fully.paid"
+
+    # 과제 조건: not.fully.paid 고정
+    target_col = "not.fully.paid"
+    if target_col not in df.columns:
+        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
+        st.stop()
 
     st.info(f"타깃(Y): {target_col}")
 
@@ -294,38 +304,46 @@ with tabs[1]:
     num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
     num_cols_all = [c for c in num_cols_all if c != target_col]
 
-    # 잠금/완료 표시
-    if st.session_state.done_1:
-        st.success("✅ ① 완료: T-test 결과가 저장되어 있습니다.")
-        passed = st.session_state.get("ttest_passed", [])
-        st.write("통과 feature:", passed if len(passed) > 0 else "없음")
-        with st.expander("p-value 표 보기(선택)"):
-            st.dataframe(st.session_state.get("ttest_table", pd.DataFrame()),
-                         use_container_width=True)
-    else:
+    if not st.session_state["done_1"]:
         if st.button("T-test 실행 (p ≤ 0.5)"):
             g0 = df[df[target_col] == 0]
             g1 = df[df[target_col] == 1]
 
-            rows, passed = [], []
+            rows = []
+            passed = []
+
             for col in num_cols_all:
                 x0 = g0[col].dropna()
                 x1 = g1[col].dropna()
                 if len(x0) < 2 or len(x1) < 2:
                     continue
+
                 try:
                     _, p = stats.ttest_ind(x0, x1, equal_var=False, nan_policy="omit")
                 except Exception:
                     continue
+
                 rows.append((col, float(p)))
                 if p <= p_thr:
                     passed.append(col)
 
             ttest_df = pd.DataFrame(rows, columns=["feature", "p_value"]).sort_values("p_value")
-            st.session_state.ttest_passed = passed
-            st.session_state.ttest_table = ttest_df
-            st.session_state.done_1 = True
+
+            st.session_state["ttest_passed"] = passed
+            st.session_state["ttest_table"] = ttest_df
+            st.session_state["done_1"] = True
             st.rerun()
+
+    # ✅ ① 결과는 항상 표시(사라지지 않음)
+    if st.session_state.get("done_1", False):
+        passed = st.session_state.get("ttest_passed", [])
+        st.success(f"✅ ① 완료: 통과 feature {len(passed)}개")
+        st.markdown("### ✅ T-test 통과 feature 목록")
+        st.write(passed if len(passed) > 0 else "통과 feature 없음")
+
+        with st.expander("p-value 결과표 보기(선택)"):
+            st.dataframe(st.session_state.get("ttest_table", pd.DataFrame()),
+                         use_container_width=True)
 
     st.divider()
 
@@ -335,31 +353,33 @@ with tabs[1]:
     st.markdown("## ② 데이터 전처리")
     st.caption("이상치 제거(IQR) + 결측치 제거 + 원핫 인코딩 + 스케일링")
 
-    if not st.session_state.done_1:
+    if not st.session_state.get("done_1", False):
         st.info("🔒 ① T-test를 완료하면 ②가 활성화됩니다.")
         st.stop()
 
     iqr_k = st.slider("IQR 이상치 제거 강도(k)", 1.0, 3.0, 1.5, 0.1)
 
-    if st.session_state.done_2:
-        st.success("✅ ② 완료: 전처리 결과가 저장되어 있습니다.")
-        Xp = st.session_state["X_processed"]
-        yp = st.session_state["y_processed"]
-        st.write(f"전처리 후 X shape: {Xp.shape} / y length: {len(yp)}")
-    else:
+    if not st.session_state.get("done_2", False):
         if st.button("데이터 전처리 실행"):
             passed_num = st.session_state.get("ttest_passed", [])
+
+            # X 구성: 수치형=passed_num + 범주형=전체(단, target 제외)
             numeric_all = df.select_dtypes(include=[np.number]).columns.tolist()
             cat_cols = [c for c in df.columns if (c not in numeric_all) and (c != target_col)]
-
             use_cols = passed_num + cat_cols
+
+            if len(use_cols) == 0:
+                st.error("전처리에 사용할 feature가 없습니다.")
+                st.stop()
+
             X = df[use_cols].copy()
             y = df[target_col].astype(int).copy()
 
-            # (1) 이상치 제거(IQR) - 수치형 passed 변수만
+            # (1) 이상치 제거(IQR) - passed 수치형에만 적용
             if len(passed_num) > 0:
                 tmp = pd.concat([X, y], axis=1)
                 mask = pd.Series(True, index=tmp.index)
+
                 for c in passed_num:
                     s = tmp[c]
                     q1 = s.quantile(0.25)
@@ -367,14 +387,16 @@ with tabs[1]:
                     iqr = q3 - q1
                     if pd.isna(iqr) or iqr == 0:
                         continue
+
                     lo = q1 - iqr_k * iqr
                     hi = q3 + iqr_k * iqr
                     mask &= s.between(lo, hi) | s.isna()
+
                 tmp = tmp.loc[mask].copy()
                 y = tmp[target_col].astype(int)
                 X = tmp.drop(columns=[target_col])
 
-            # (2) 결측치 제거
+            # (2) 결측치 제거(요청: 제거)
             tmp2 = pd.concat([X, y], axis=1).dropna()
             y = tmp2[target_col].astype(int)
             X = tmp2.drop(columns=[target_col])
@@ -382,103 +404,107 @@ with tabs[1]:
             # (3) 원핫 인코딩
             X_oh = pd.get_dummies(X, drop_first=True)
 
-            # (4) 스케일링(수치형 passed 변수만)
+            # (4) 스케일링: 수치형 passed 변수만
             scaler = StandardScaler()
             scale_cols = [c for c in X_oh.columns if c in passed_num]
             if len(scale_cols) > 0:
                 X_oh[scale_cols] = scaler.fit_transform(X_oh[scale_cols])
 
-            st.session_state.X_processed = X_oh
-            st.session_state.y_processed = y
-            st.session_state.scaler = scaler
-            st.session_state.used_num_cols = passed_num
-            st.session_state.used_cat_cols = cat_cols
+            st.session_state["X_processed"] = X_oh
+            st.session_state["y_processed"] = y
+            st.session_state["scaler"] = scaler
 
-            st.session_state.done_2 = True
+            st.session_state["done_2"] = True
             st.rerun()
+
+    # ✅ ② 결과 항상 표시
+    if st.session_state.get("done_2", False):
+        Xp = st.session_state["X_processed"]
+        yp = st.session_state["y_processed"]
+        st.success("✅ ② 완료: 전처리 결과가 저장되어 있습니다.")
+        st.write(f"전처리 후 X shape: {Xp.shape} / y length: {len(yp)}")
 
     st.divider()
 
     # =========================================================
-# ③ Feature Selection + 데이터 분할(8:2)  (Stepwise Forward ONLY)
-# =========================================================
-st.markdown("## ③ Feature Selection + 데이터 분할(8:2)")
-st.caption("Train에서만 전진선택법을 수행하여 데이터 누수를 방지합니다.")
+    # ③ Feature Selection + 8:2 분할 (Stepwise Forward ONLY)
+    # =========================================================
+    st.markdown("## ③ Feature Selection + 데이터 분할(8:2)")
+    st.caption("Train에서만 전진선택법을 수행하여 데이터 누수를 방지합니다.")
 
-if not st.session_state.get("done_2", False):
-    st.info("🔒 ② 전처리를 완료하면 ③이 활성화됩니다.")
-    st.stop()
-
-Xp = st.session_state["X_processed"]
-yp = st.session_state["y_processed"]
-
-# 항상 동일한 8:2 분할
-X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-    Xp, yp, test_size=0.2, random_state=42, stratify=yp
-)
-st.write(f"분할 완료: Train {X_train_raw.shape} / Test {X_test_raw.shape}")
-
-st.markdown("### ✅ Stepwise(전진선택)로 변수 선택 (Train에서만)")
-p_enter = st.slider("Stepwise 진입 기준(p_enter)", 0.001, 0.50, 0.05, 0.001)
-
-if st.button("Stepwise 실행 + 8:2 저장"):
-    remaining = list(X_train_raw.columns)
-    selected = []
-    final_model = None
-
-    for _ in range(len(remaining)):
-        best_p = None
-        best_var = None
-        best_model = None
-
-        for v in remaining:
-            cols_try = selected + [v]
-            X_const = sm.add_constant(X_train_raw[cols_try], has_constant="add")
-            try:
-                m = sm.Logit(y_train, X_const).fit(disp=False)
-                pval = float(m.pvalues.get(v, 1.0))
-            except Exception:
-                continue
-
-            if best_p is None or pval < best_p:
-                best_p = pval
-                best_var = v
-                best_model = m
-
-        if best_var is None or best_p is None or best_p > p_enter:
-            break
-
-        selected.append(best_var)
-        remaining.remove(best_var)
-        final_model = best_model
-
-    if len(selected) == 0:
-        st.warning("선택된 변수가 없습니다. p_enter를 완화하세요.")
+    if not st.session_state.get("done_2", False):
+        st.info("🔒 ② 전처리를 완료하면 ③이 활성화됩니다.")
         st.stop()
 
-    # 선택된 변수로 train/test 구성
-    X_train = X_train_raw[selected].copy()
-    X_test = X_test_raw[selected].copy()
+    Xp = st.session_state["X_processed"]
+    yp = st.session_state["y_processed"]
 
-    # ✅ 반드시 session_state에 저장 (다음 탭에서 사용)
-    st.session_state["selected_cols"] = selected
-    st.session_state["X_train"] = X_train
-    st.session_state["X_test"] = X_test
-    st.session_state["y_train"] = y_train
-    st.session_state["y_test"] = y_test
-    st.session_state["logit_stepwise_model"] = final_model
+    # 먼저 8:2 분할(고정)
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+        Xp, yp, test_size=0.2, random_state=42, stratify=yp
+    )
+    st.write(f"분할 완료: Train {X_train_raw.shape} / Test {X_test_raw.shape}")
 
-    st.session_state["done_3"] = True
-    st.rerun()
+    p_enter = st.slider("Stepwise 진입 기준(p_enter)", 0.001, 0.50, 0.05, 0.001)
 
-# 결과 고정 표시
-if st.session_state.get("done_3", False):
-    st.success("✅ ③ 완료: Stepwise + 8:2 분할 결과가 저장되어 있습니다.")
-    st.write("선택 변수 수:", len(st.session_state["selected_cols"]))
-    with st.expander("선택 변수 전체 보기"):
-        st.write(st.session_state["selected_cols"])
-    st.write("Train shape:", st.session_state["X_train"].shape, "/ Test shape:", st.session_state["X_test"].shape)
+    if not st.session_state.get("done_3", False):
+        if st.button("Stepwise 실행 + 8:2 저장"):
+            remaining = list(X_train_raw.columns)
+            selected = []
+            final_model = None
 
+            for _ in range(len(remaining)):
+                best_p = None
+                best_var = None
+                best_model = None
+
+                for v in remaining:
+                    cols_try = selected + [v]
+                    X_const = sm.add_constant(X_train_raw[cols_try], has_constant="add")
+                    try:
+                        m = sm.Logit(y_train, X_const).fit(disp=False)
+                        pval = float(m.pvalues.get(v, 1.0))
+                    except Exception:
+                        continue
+
+                    if best_p is None or pval < best_p:
+                        best_p = pval
+                        best_var = v
+                        best_model = m
+
+                if best_var is None or best_p is None or best_p > p_enter:
+                    break
+
+                selected.append(best_var)
+                remaining.remove(best_var)
+                final_model = best_model
+
+            if len(selected) == 0:
+                st.warning("선택된 변수가 없습니다. p_enter를 완화하세요.")
+                st.stop()
+
+            # 선택된 변수로 train/test 구성
+            X_train = X_train_raw[selected].copy()
+            X_test = X_test_raw[selected].copy()
+
+            # ✅ 다음 단계에서 AttributeError 방지: 반드시 key로 저장
+            st.session_state["selected_cols"] = selected
+            st.session_state["X_train"] = X_train
+            st.session_state["X_test"] = X_test
+            st.session_state["y_train"] = y_train
+            st.session_state["y_test"] = y_test
+            st.session_state["logit_stepwise_model"] = final_model
+
+            st.session_state["done_3"] = True
+            st.rerun()
+
+    # ✅ ③ 결과 항상 표시
+    if st.session_state.get("done_3", False):
+        st.success("✅ ③ 완료: Stepwise + 8:2 분할 결과가 저장되어 있습니다.")
+        st.write("선택 변수 수:", len(st.session_state["selected_cols"]))
+        with st.expander("선택 변수 전체 보기"):
+            st.write(st.session_state["selected_cols"])
+        st.write("Train shape:", st.session_state["X_train"].shape, "/ Test shape:", st.session_state["X_test"].shape)
 
 # ============================================================
 # 3) 모델링(신경망)

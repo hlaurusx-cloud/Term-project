@@ -643,13 +643,18 @@ with tabs[3]:
     y_test = st.session_state["y_test"]
     proba_test = st.session_state["proba_test"]
 
-    # 길이 불일치 방지
+    # 타입 안전 가드
+    import numpy as np
+    y_test = np.asarray(y_test).ravel()
+    proba_test = np.asarray(proba_test).ravel()
+
     if len(y_test) != len(proba_test):
         st.error(
-            f"y_test({len(y_test)}) 와 proba_test({len(proba_test)}) 길이가 다릅니다.\n"
+            f"y_test({len(y_test)})와 proba_test({len(proba_test)}) 길이가 다릅니다.\n"
             "③ Stepwise 이후 MLP를 다시 학습하세요."
         )
         st.stop()
+
 
     # ======================================================
     # Segmentation 설정

@@ -513,110 +513,135 @@ with tabs[1]:
 # 3) 모델링(신경망)
 # ============================================================
 with tabs[2]:
-    st.subheader("3) 모델링(신경망): MLP 학습 및 예측확률(PD) 생성")
-
-    # ✅ Stepwise 결과가 없으면 모델링 불가 (AttributeError 방지)
+    st.subheader("MLP 모델링 (Neural Network)")
+    # 0) 가드: Stepwise + 분할이 완료되어야 함
     required = ["X_train", "X_test", "y_train", "y_test"]
     missing = [k for k in required if k not in st.session_state]
     if missing:
-        st.info(f"먼저 [2) 데이터 전처리]에서 Stepwise 실행 + 8:2 저장을 완료하세요. (누락: {missing})")
+        st.warning(f"먼저 ③ Stepwise를 완료하세요. (누락: {missing})")
         st.stop()
+        
+        X_train = st.session_state["X_train"]
+        X_test  = st.session_state["X_test"]
+        y_train = st.session_state["y_train"]
+        y_test  = st.session_state["y_test"]
 
-    X_train_p = st.session_state["X_train"]
-    y_train = st.session_state["y_train"]
+    # DataFrame -> numpy (MLP는 둘 다 가능하지만 numpy가 더 안정적)
+    Xtr = X_train.values if hasattr(X_train, "values") else X_train
+    Xte = X_test.values if hasattr(X_test, "values") else X_test
+    
+    st.write("Train shape:", Xtr.shape, " / Test shape:", Xte.shape)
+    
+    # ------------------------------------------------------------
+    # 1) 하이퍼파라미터 UI
+    # ------------------------------------------------------------
+    st.markdown("### 1) MLP 하이퍼파라미터 설정")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        hidden1 = st.number_input("Hidden layer 1 neurons", 4, 512, 64, 4)
+        hidden2 = st.number_input("Hidden layer 2 neurons (0이면 1층)", 0, 512, 32, 4)
+    with col2:
+        alpha = st.select_slider("L2 규제(alpha)", options=[1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1], value=1e-4)
+        lr = st.select_slider("초기 학습률(learning_rate_init)", options=[1e-4, 3e-4, 1e-3, 3e-3, 1e-2], value=1e-3)
+    with col3:
+        max_iter = st.number_input("max_iter", 200, 5000, 2000, 100)
+        random_state = st.number_input("random_state", 0, 9999, 42, 1)
+    
+    activation = st.selectbox("Activation", ["relu", "tanh", "logistic"])
+    solver = st.selectbox("Solver", ["adam", "lbfgs", "sgd"])
 
-    # 하이퍼파라미터
+    # hidden layer 구조 만들기
+    hidden_layer_sizes = (hidden1,) if hidden2 == 0 else (hidden1, hidden2)
+    st.write("hidden_layer_sizes =", hidden_layer_sizes)
+    
+    # ------------------------------------------------------------
+    # 2) 불균형 대응(sample_weight) 옵션
+    # ------------------------------------------------------------
+    st.markdown("### 2) 불균형 데이터 가중치 설정")
+    use_weight = st.checkbox("불균형 대응(sample_weight) 적용", value=True)
+    
+    pos_weight = st.slider("양성(1) 가중치 배수", 1.0, 20.0, 5.0, 0.5)
+    # 예: 1 클래스에 weight=pos_weight, 0 클래스에 weight=1.0
+    sample_weight = None
+    if use_weight:
+        sample_weight = np.where(np.array(y_train) == 1, pos_weight, 1.0)
+
+# ------------------------------------------------------------
+# 3) 모델 학습
+# ------------------------------------------------------------
+if st.button("MLP 학습 실행"):
+    mlp = MLPClassifier(
+        hidden_layer_sizes=hidden_layer_sizes,
+        activation=activation,
+        solver=solver,
+        alpha=float(alpha),
+        learning_rate_init=float(lr),
+        max_iter=int(max_iter),
+        early_stopping=True,          # ✅ 과적합 방지
+        validation_fraction=0.2,      # 내부 검증셋 비율
+        n_iter_no_change=20,
+        random_state=int(random_state)
+    )
+
+    mlp.fit(Xtr, y_train, sample_weight=sample_weight)
+
+    # 세션 저장
+    st.session_state["mlp_model"] = mlp
+    st.success("MLP 학습 완료")
+
+# ------------------------------------------------------------
+# 4) 평가 (ROC/PR/CM + threshold)
+# ------------------------------------------------------------
+if "mlp_model" in st.session_state:
+    st.markdown("### 3) 성능 평가")
+    mlp = st.session_state["mlp_model"]
+
+    # 확률 예측
+    proba = mlp.predict_proba(Xte)[:, 1]
+
+    # threshold 조절
+    thr = st.slider("결정 임계값(threshold)", 0.01, 0.99, 0.50, 0.01)
+    pred = (proba >= thr).astype(int)
+
+    roc_auc = roc_auc_score(y_test, proba)
+    pr_auc = average_precision_score(y_test, proba)
+    f1 = f1_score(y_test, pred)
+    prec = precision_score(y_test, pred, zero_division=0)
+    rec = recall_score(y_test, pred, zero_division=0)
+
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        h1 = st.number_input("Hidden Layer 1", 16, 512, 64, 16)
-    with c2:
-        h2 = st.number_input("Hidden Layer 2 (0이면 1층)", 0, 512, 32, 16)
-    with c3:
-        alpha = st.number_input("L2 규제(alpha)", 0.0, 0.01, 0.0001, 0.0001, format="%.4f")
-    with c4:
-        max_iter = st.number_input("max_iter", 100, 5000, 500, 100)
+    c1.metric("ROC-AUC", f"{roc_auc:.4f}")
+    c2.metric("PR-AUC(AP)", f"{pr_auc:.4f}")
+    c3.metric("F1", f"{f1:.4f}")
+    c4.metric("Recall", f"{rec:.4f}")
 
-    hidden = (int(h1),) if int(h2) == 0 else (int(h1), int(h2))
+    # Confusion Matrix
+    cm = confusion_matrix(y_test, pred)
+    st.write("Confusion Matrix")
+    st.dataframe(pd.DataFrame(cm, index=["True0","True1"], columns=["Pred0","Pred1"]),
+                 use_container_width=True)
 
-    colA, colB = st.columns(2)
-    with colA:
-        early_stopping = st.checkbox("early_stopping 사용", value=True)
-    with colB:
-        validation_fraction = st.slider("validation_fraction", 0.05, 0.30, 0.10, 0.01)
+    # ROC Curve
+    fpr, tpr, _ = roc_curve(y_test, proba)
+    fig, ax = plt.subplots()
+    ax.plot(fpr, tpr)
+    ax.set_xlabel("FPR")
+    ax.set_ylabel("TPR")
+    ax.set_title("ROC Curve")
+    st.pyplot(fig)
 
-    if st.button("신경망 학습 실행"):
-        model = MLPClassifier(
-            hidden_layer_sizes=hidden,
-            activation="relu",
-            solver="adam",
-            alpha=float(alpha),
-            max_iter=int(max_iter),
-            random_state=42,
-            early_stopping=bool(early_stopping),
-            validation_fraction=float(validation_fraction) if early_stopping else 0.1
-        )
-        model.fit(X_train_p, y_train)
+    # PR Curve
+    pr, rc, _ = precision_recall_curve(y_test, proba)
+    fig, ax = plt.subplots()
+    ax.plot(rc, pr)
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("Precision-Recall Curve")
+    st.pyplot(fig)
 
-        st.session_state.model = model
-        st.success("신경망 학습 완료")
+    st.caption("불균형 데이터에서는 PR-AUC와 Recall이 특히 중요합니다.")
 
-        # test proba
-        X_test_p = st.session_state["X_test"]
-        proba_test = model.predict_proba(X_test_p)[:, 1]
-        st.session_state.proba_test = proba_test
-
-        st.write("예측확률(PD) 샘플(상위 10개)")
-        st.write(pd.Series(proba_test).head(10))
-
-        # 학습 수렴 정보
-        if hasattr(model, "loss_curve_"):
-            st.write("학습 loss_curve 길이:", len(model.loss_curve_))
-            fig = plt.figure()
-            ax = fig.add_subplot(111)
-            ax.plot(model.loss_curve_)
-            ax.set_xlabel("Iteration")
-            ax.set_ylabel("Loss")
-            ax.set_title("Training Loss Curve")
-            st.pyplot(fig, clear_figure=True)
-
-# ============================================================
-# 4) 성능평가
-# ============================================================
-with tabs[3]:
-    st.subheader("4) 성능평가: AUC, Accuracy, Precision/Recall/F1, 혼동행렬, ROC")
-
-    if st.session_state.proba_test is None:
-        st.info("먼저 [3) 모델링]에서 신경망을 학습하세요.")
-        st.stop()
-
-    y_test = st.session_state.y_test
-    proba_test = st.session_state.proba_test
-
-    threshold = st.slider("분류 임계값(threshold)", 0.05, 0.95, 0.50, 0.01)
-    met = metrics_from_proba(y_test, proba_test, threshold=float(threshold))
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("AUC", f"{met['AUC']:.4f}")
-    c2.metric("Accuracy", f"{met['Accuracy']:.4f}")
-    c3.metric("Precision", f"{met['Precision']:.4f}")
-    c4.metric("Recall", f"{met['Recall']:.4f}")
-    c5.metric("F1", f"{met['F1']:.4f}")
-
-    st.write("혼동행렬(Confusion Matrix) [ [TN FP], [FN TP] ]")
-    st.write(met["CM"])
-
-    fig = plot_roc(y_test, proba_test, title=f"ROC Curve (AUC={met['AUC']:.3f})")
-    st.pyplot(fig, clear_figure=True)
-
-    # 확률 분포
-    st.write("예측확률(PD) 분포")
-    fig2 = plt.figure()
-    ax2 = fig2.add_subplot(111)
-    ax2.hist(proba_test, bins=30)
-    ax2.set_xlabel("Predicted PD")
-    ax2.set_ylabel("Count")
-    ax2.set_title("PD Distribution (Test)")
-    st.pyplot(fig2, clear_figure=True)
 
 # ============================================================
 # 5) PD 기반 고객세분화/부실율

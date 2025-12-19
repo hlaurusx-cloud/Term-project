@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-
+from scipy import stats
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
@@ -170,10 +170,96 @@ with tabs[0]:
         use_container_width=True
     )
 
-    st.caption("해석 포인트: 타깃이 이진(0/1)인지 확인하고, 결측치/이상치/범주형 변수를 파악합니다.")
+    
+    # ------------------------------------------------------------
+    # EDA 시각화 (교체 버전)
+    # ------------------------------------------------------------
+    st.markdown("## 📊 EDA 시각화")
 
+    # 1️⃣ 타깃 변수 분포 (Count + 불균형 확인)
+    st.markdown("### 1️⃣ 타깃 변수 분포")
+    target_cnt = y_raw.value_counts().sort_index()
+    target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
 
-from scipy import stats
+    fig, ax = plt.subplots()
+    ax.bar(target_cnt.index.astype(str), target_cnt.values)
+    ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
+    ax.set_ylabel("Count")
+    ax.set_title("Target Distribution")
+    st.pyplot(fig)
+
+    st.dataframe(
+        pd.DataFrame({"count": target_cnt, "ratio(%)": target_ratio}),
+        use_container_width=True
+    )
+
+    st.caption(
+        "해석: 1(부실)보다 0(정상)의 비율이 매우 큰 경우, "
+        "로지스틱/신경망 등 분류 모델에서 예측 편향 및 성능지표 해석 오류가 발생할 수 있습니다."
+    )
+
+    # 2️⃣ 수치형 변수 선택 → 타깃별 분포 비교(Boxplot)
+    st.markdown("### 2️⃣ 수치형 변수의 타깃별 분포 비교")
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    num_cols = [c for c in num_cols if c != target_col]
+
+    if len(num_cols) == 0:
+        st.warning("수치형 변수가 없습니다.")
+    else:
+        selected_var = st.selectbox("분포를 비교할 수치형 변수 선택", options=num_cols, key="eda_selected_num")
+
+        tmp = df[[selected_var, target_col]].dropna()
+        if tmp[target_col].nunique() == 2:
+            g0 = tmp[tmp[target_col] == 0][selected_var]
+            g1 = tmp[tmp[target_col] == 1][selected_var]
+
+            fig, ax = plt.subplots()
+            ax.boxplot([g0, g1], labels=["Target = 0", "Target = 1"])
+            ax.set_title(f"{selected_var} : Target별 분포 비교")
+            ax.set_ylabel(selected_var)
+            st.pyplot(fig)
+
+            st.caption(
+                "해석: 두 그룹의 중앙값·분산 차이가 클수록 해당 변수는 부실 여부를 구분하는 데 유의미할 가능성이 있습니다."
+            )
+
+            # 3️⃣ 분포 진단 (왜도·첨도 + 정규성 참고)
+            st.markdown("### 3️⃣ 분포 진단 (참고)")
+            x = tmp[selected_var]
+            st.write(f"- 왜도 (Skewness): {stats.skew(x):.4f}")
+            st.write(f"- 첨도 (Kurtosis, fisher): {stats.kurtosis(x, fisher=True):.4f}")
+
+            if len(x) >= 3:
+                x_sample = x.sample(n=min(5000, len(x)), random_state=42)
+                _, p_value = stats.shapiro(x_sample)
+                st.write(f"- Shapiro-Wilk p-value (표본≤5000): {p_value:.6f}")
+
+            st.caption(
+                "참고: 정규성은 로지스틱 회귀의 필수 전제는 아니지만, 극단적 왜도/이상치는 계수 추정과 모델 안정성에 영향을 줄 수 있습니다."
+            )
+        else:
+            st.info("타깃이 이진(0/1) 형태가 아니어서 타깃별 박스플롯 비교를 생략합니다.")
+
+    # 4️⃣ 수치형 변수 상관관계 (다중공선성 확인)
+    st.markdown("### 4️⃣ 수치형 변수 상관관계(Heatmap)")
+    num_df = df.select_dtypes(include=[np.number]).copy()
+    if num_df.shape[1] >= 2:
+        corr = num_df.corr(numeric_only=True)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        im = ax.imshow(corr.values)
+        ax.set_xticks(range(len(corr.columns)))
+        ax.set_yticks(range(len(corr.columns)))
+        ax.set_xticklabels(corr.columns, rotation=90)
+        ax.set_yticklabels(corr.columns)
+        ax.set_title("Correlation Heatmap (Numeric Variables)")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        st.pyplot(fig)
+
+        st.caption("해석: 상관계수가 매우 높은 변수 쌍은 다중공선성 문제를 유발할 수 있어, 변수 선택/축소가 필요할 수 있습니다.")
+    else:
+        st.info("상관관계를 계산할 수 있는 수치형 변수가 충분하지 않습니다.")
+
 
 # ============================================================
 # 2) 데이터 전처리

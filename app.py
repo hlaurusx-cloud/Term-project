@@ -69,17 +69,31 @@ def make_quantile_grades(proba, n_bins=5):
     grade = pd.Series(q).map(lambda i: labels[int(i)] if pd.notna(i) else labels[-1])
     return grade, labels
 
-def segmentation_table(y_true, proba, n_bins=5):
-    grade, labels = make_quantile_grades(proba, n_bins=n_bins)
+def segmentation_table(y_true, proba, n_bins=10):
+    import numpy as np
+    import pandas as pd
+
+    y_true = np.asarray(y_true).ravel()
+    proba  = np.asarray(proba).ravel()
+
+    if len(y_true) != len(proba):
+        raise ValueError(
+            f"[segmentation_table] 길이 불일치: y_true={len(y_true)}, proba={len(proba)}. "
+            "Stepwise 이후 모델을 다시 학습하세요."
+        )
+
+    grade = pd.qcut(proba, q=n_bins, labels=False, duplicates="drop") + 1
     temp = pd.DataFrame({"PD": proba, "Y": y_true, "Grade": grade})
-    agg = temp.groupby("Grade").agg(
-        Customers=("Y", "count"),
-        Avg_PD=("PD", "mean"),
-        Default_Rate=("Y", "mean")
-    ).reset_index()
-    agg["order"] = agg["Grade"].apply(lambda x: ord(x) - ord("A"))
-    agg = agg.sort_values("order").drop(columns=["order"])
+
+    agg = (temp.groupby("Grade")
+                .agg(cnt=("Y", "size"),
+                     bad=("Y", "sum"),
+                     avg_pd=("PD", "mean"))
+                .reset_index())
+    agg["bad_rate"] = agg["bad"] / agg["cnt"]
+
     return agg, temp
+
 
 def plot_default_rate_by_grade(agg_df, title="Default Rate by Risk Grade"):
     fig = plt.figure()

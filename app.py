@@ -84,7 +84,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 개인신용평가 (상환예측) – Logit + 고객세분화")
+st.title("📊 개인신용평가 – Logit (상환예측) + 고객세분화")
 st.markdown(
     """
     이 앱은 **개인신용 데이터(예: Payco, LendingClub)** 를 이용하여  

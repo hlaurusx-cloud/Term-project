@@ -73,23 +73,35 @@ def segmentation_table(y_true, proba, n_bins=10):
     import numpy as np
     import pandas as pd
 
+    # 1️⃣ 强制 1D
     y_true = np.asarray(y_true).ravel()
     proba  = np.asarray(proba).ravel()
 
+    # 2️⃣ 长度检查（关键）
     if len(y_true) != len(proba):
         raise ValueError(
-            f"[segmentation_table] 길이 불일치: y_true={len(y_true)}, proba={len(proba)}. "
-            "Stepwise 이후 모델을 다시 학습하세요."
+            f"[segmentation_table] 长度不一致: y_true={len(y_true)}, proba={len(proba)}"
         )
 
+    # 3️⃣ 分箱（按概率分位数）
     grade = pd.qcut(proba, q=n_bins, labels=False, duplicates="drop") + 1
-    temp = pd.DataFrame({"PD": proba, "Y": y_true, "Grade": grade})
 
-    agg = (temp.groupby("Grade")
-                .agg(cnt=("Y", "size"),
-                     bad=("Y", "sum"),
-                     avg_pd=("PD", "mean"))
-                .reset_index())
+    temp = pd.DataFrame({
+        "PD": proba,
+        "Y": y_true,
+        "Grade": grade
+    })
+
+    agg = (
+        temp.groupby("Grade")
+        .agg(
+            cnt=("Y", "size"),
+            bad=("Y", "sum"),
+            avg_pd=("PD", "mean")
+        )
+        .reset_index()
+    )
+
     agg["bad_rate"] = agg["bad"] / agg["cnt"]
 
     return agg, temp

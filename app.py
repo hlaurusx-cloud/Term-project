@@ -271,25 +271,6 @@ with tabs[1]:
     if "done_2" not in st.session_state: st.session_state.done_2 = False
     if "done_3" not in st.session_state: st.session_state.done_3 = False
 
-    def reset_wizard():
-        for k in [
-            "done_1","done_2","done_3",
-            "ttest_passed","ttest_table",
-            "X_processed","y_processed","scaler","used_num_cols","used_cat_cols",
-            "selected_cols","X_train","X_test","y_train","y_test",
-            "l1_selector_model","logit_stepwise_model"
-        ]:
-            if k in st.session_state:
-                del st.session_state[k]
-        st.session_state.done_1 = False
-        st.session_state.done_2 = False
-        st.session_state.done_3 = False
-
-    colL, colR = st.columns([4, 1])
-    with colR:
-        if st.button("전체 초기화(Reset)"):
-            reset_wizard()
-            st.rerun()
 
     # -----------------------------
     # 타깃 확인

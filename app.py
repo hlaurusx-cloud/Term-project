@@ -787,4 +787,3 @@ with tabs[3]:
                            file_name="pd_segmentation_agg.csv", mime="text/csv")
         st.download_button("Segmentation(raw) CSV 다운로드", data=raw.to_csv(index=False).encode("utf-8-sig"),
                            file_name="pd_segmentation_raw.csv", mime="text/csv")
-container_width=True)

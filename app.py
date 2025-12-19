@@ -140,41 +140,124 @@ if df is None:
 # ============================================================
 # 1) 데이터 이해(EDA)
 # ============================================================
-with tabs[0]:
-    st.subheader("1) 데이터 탐색(EDA): 변수 확인, 기초통계, 타깃 분포")
-
-    st.write("데이터 미리보기")
-    st.dataframe(df.head(5), use_container_width=True)
-
-    st.write("기초 통계(수치형)")
-    st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
-
-    # 타깃 변수: not.fully.paid 고정 + 디자인 유지(선택 UI는 유지하되 비활성화)
-    if "not.fully.paid" not in df.columns:
-        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
-        st.stop()
-
-    default_target = "not.fully.paid"
-    target_col = st.selectbox(
-        "타깃(Y) 컬럼 선택",
-        options=df.columns.tolist(),
-        index=df.columns.tolist().index(default_target),
-        disabled=True  # ✅ 선택 기능만 제거
-    )
-    st.session_state.target_col = target_col
-
-    # 타깃 분포
-    y_raw = df[target_col]
-    st.write("타깃 분포")
-    st.dataframe(
-        y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
-        use_container_width=True
-    )
-
-    st.caption("해석 포인트: 타깃이 이진(0/1)인지 확인하고, 결측치/이상치/범주형 변수를 파악합니다.")
-
-
+# ============================================================
+# EDA 시각화 (교체 버전)
+# ============================================================
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from scipy import stats
+
+st.markdown("## 📊 EDA 시각화")
+
+# ------------------------------------------------------------
+# 1️⃣ 타깃 변수 분포 (Count + 불균형 확인)
+# ------------------------------------------------------------
+st.markdown("### 1️⃣ 타깃 변수 분포")
+
+target_cnt = y_raw.value_counts().sort_index()
+target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
+
+fig, ax = plt.subplots()
+ax.bar(target_cnt.index.astype(str), target_cnt.values)
+ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
+ax.set_ylabel("Count")
+ax.set_title("Target Distribution")
+st.pyplot(fig)
+
+st.dataframe(
+    pd.DataFrame({
+        "count": target_cnt,
+        "ratio(%)": target_ratio
+    }),
+    use_container_width=True
+)
+
+st.caption(
+    "해석: 1(부실)보다 0(정상)의 비율이 매우 큰 경우, "
+    "로지스틱 회귀에서 계수 불안정 및 예측 편향 문제가 발생할 수 있음"
+)
+
+# ------------------------------------------------------------
+# 2️⃣ 수치형 변수 선택 → 타깃별 분포 비교(Boxplot)
+# ------------------------------------------------------------
+st.markdown("### 2️⃣ 수치형 변수의 타깃별 분포 비교")
+
+num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+num_cols = [c for c in num_cols if c != target_col]
+
+selected_var = st.selectbox(
+    "분포를 비교할 수치형 변수 선택",
+    options=num_cols
+)
+
+tmp = df[[selected_var, target_col]].dropna()
+
+fig, ax = plt.subplots()
+ax.boxplot(
+    [
+        tmp[tmp[target_col] == 0][selected_var],
+        tmp[tmp[target_col] == 1][selected_var]
+    ],
+    labels=["Target = 0", "Target = 1"]
+)
+ax.set_title(f"{selected_var} : Target별 분포 비교")
+ax.set_ylabel(selected_var)
+st.pyplot(fig)
+
+st.caption(
+    "해석: 두 그룹의 중앙값·분산 차이가 클수록 "
+    "해당 변수는 부실 여부를 구분하는 데 유의미할 가능성이 있음"
+)
+
+# ------------------------------------------------------------
+# 3️⃣ 분포 진단 (왜도·첨도 + 정규성 참고)
+# ------------------------------------------------------------
+st.markdown("### 3️⃣ 분포 진단 (로지스틱 회귀 전 사전 점검)")
+
+x = tmp[selected_var]
+
+skew = stats.skew(x)
+kurt = stats.kurtosis(x, fisher=True)
+
+st.write(f"- 왜도 (Skewness): {skew:.4f}")
+st.write(f"- 첨도 (Kurtosis): {kurt:.4f}")
+
+if len(x) >= 3:
+    x_sample = x.sample(n=min(5000, len(x)), random_state=42)
+    stat, p_value = stats.shapiro(x_sample)
+    st.write(f"- Shapiro-Wilk p-value: {p_value:.6f}")
+
+st.caption(
+    "참고: 로지스틱 회귀는 정규성을 엄격히 요구하지 않으나, "
+    "극단적 왜도·이상치는 계수 추정 안정성에 영향을 줄 수 있음"
+)
+
+# ------------------------------------------------------------
+# 4️⃣ 수치형 변수 상관관계 (다중공선성 확인)
+# ------------------------------------------------------------
+st.markdown("### 4️⃣ 수치형 변수 상관관계")
+
+num_df = df.select_dtypes(include=[np.number])
+
+if num_df.shape[1] >= 2:
+    corr = num_df.corr()
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    im = ax.imshow(corr.values)
+    ax.set_xticks(range(len(corr.columns)))
+    ax.set_yticks(range(len(corr.columns)))
+    ax.set_xticklabels(corr.columns, rotation=90)
+    ax.set_yticklabels(corr.columns)
+    ax.set_title("Correlation Heatmap (Numeric Variables)")
+    fig.colorbar(im, ax=ax)
+    st.pyplot(fig)
+
+    st.caption(
+        "해석: 상관계수가 매우 높은 변수 쌍은 "
+        "로지스틱 회귀에서 다중공선성 문제를 유발할 수 있음"
+    )
+
 
 # ============================================================
 # 2) 데이터 전처리

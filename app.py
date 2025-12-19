@@ -160,42 +160,40 @@ with tabs[0]:
         index=df.columns.tolist().index(default_target),
         disabled=True  # ✅ 선택 기능만 제거
     )
-    st.session_state.target_col = target_col
-    
-    
-    
+    # 타깃 변수 설정
+y_raw = df[target_col]
 
-    
-    # ------------------------------------------------------------
-    # EDA 시각화 (교체 버전)
-    # ------------------------------------------------------------
-    st.markdown("## 📊 EDA 시각화")
+# ------------------------------------------------------------
+# EDA 시각화
+# ------------------------------------------------------------
+st.markdown("## 📊 EDA 시각화")
 
-    # 1️⃣ 타깃 변수 분포 (Count + 불균형 확인)
-    st.markdown("### 1️⃣ 타깃 변수 분포")
-    target_cnt = y_raw.value_counts().sort_index()
-    target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
+# 1️⃣ 타깃 변수 분포
+st.markdown("### 1️⃣ 타깃 변수 분포")
 
-    fig, ax = plt.subplots()
-    ax.bar(target_cnt.index.astype(str), target_cnt.values)
-    ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
-    ax.set_ylabel("Count")
-    ax.set_title("Target Distribution")
-    st.pyplot(fig)
-    
-    # 타깃 분포
-    y_raw = df[target_col]
-    st.write("타깃 분포")
-    st.dataframe(
-        y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
-        use_container_width=True
-    )
+target_cnt = y_raw.value_counts().sort_index()
+target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
 
+fig, ax = plt.subplots()
+ax.bar(target_cnt.index.astype(str), target_cnt.values)
+ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
+ax.set_ylabel("Count")
+ax.set_title("Target Distribution")
+st.pyplot(fig)
 
-    st.caption(
-        "해석: 1(부실)보다 0(정상)의 비율이 매우 큰 경우, "
-        "로지스틱/신경망 등 분류 모델에서 예측 편향 및 성능지표 해석 오류가 발생할 수 있습니다."
-    )
+st.dataframe(
+    pd.DataFrame({
+        "count": target_cnt,
+        "ratio(%)": target_ratio
+    }),
+    use_container_width=True
+)
+
+st.caption(
+    "해석: 타깃 클래스가 불균형한 경우, "
+    "정확도(Accuracy)만으로 모델 성능을 평가하면 왜곡될 수 있음"
+)
+
 
     # 2️⃣ 수치형 변수 선택 → 타깃별 분포 비교(Boxplot)
     st.markdown("### 2️⃣ 수치형 변수의 타깃별 분포 비교")

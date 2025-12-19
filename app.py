@@ -144,7 +144,7 @@ with tabs[0]:
     st.subheader("1) 데이터 탐색(EDA): 변수 확인, 기초통계, 타깃 분포")
 
     st.write("데이터 미리보기")
-    st.dataframe(df.head(20), use_container_width=True)
+    st.dataframe(df.head(5), use_container_width=True)
 
     st.write("기초 통계(수치형)")
     st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)

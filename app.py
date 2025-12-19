@@ -100,7 +100,7 @@ if "prep_pipe" not in st.session_state:
 if "model" not in st.session_state:
     st.session_state.model = None
 if "X_test" not in st.session_state:
-    st.session_state.X_test = None
+    st.session_state["X_test"] = None
 if "y_test" not in st.session_state:
     st.session_state.y_test = None
 if "proba_test" not in st.session_state:
@@ -514,12 +514,15 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("3) 모델링(신경망): MLP 학습 및 예측확률(PD) 생성")
 
-    if "X_train_p" not in st.session_state:
-        st.info("먼저 [2) 데이터 전처리]에서 전처리+분할을 실행하세요.")
+    # ✅ Stepwise 결과가 없으면 모델링 불가 (AttributeError 방지)
+    required = ["X_train", "X_test", "y_train", "y_test"]
+    missing = [k for k in required if k not in st.session_state]
+    if missing:
+        st.info(f"먼저 [2) 데이터 전처리]에서 Stepwise 실행 + 8:2 저장을 완료하세요. (누락: {missing})")
         st.stop()
 
-    X_train_p = st.session_state.X_train_p
-    y_train = st.session_state.y_train
+    X_train_p = st.session_state["X_train"]
+    y_train = st.session_state["y_train"]
 
     # 하이퍼파라미터
     c1, c2, c3, c4 = st.columns(4)
@@ -557,7 +560,7 @@ with tabs[2]:
         st.success("신경망 학습 완료")
 
         # test proba
-        X_test_p = st.session_state.X_test
+        X_test_p = st.session_state["X_test"]
         proba_test = model.predict_proba(X_test_p)[:, 1]
         st.session_state.proba_test = proba_test
 

@@ -161,6 +161,13 @@ with tabs[0]:
         disabled=True  # ✅ 선택 기능만 제거
     )
     st.session_state.target_col = target_col
+    # 타깃 분포
+    y_raw = df[target_col]
+    st.write("타깃 분포")
+    st.dataframe(
+        y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
+        use_container_width=True
+    )
 
 
     

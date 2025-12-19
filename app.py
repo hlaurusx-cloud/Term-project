@@ -149,32 +149,29 @@ with tabs[0]:
     st.write("기초 통계(수치형)")
     st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
 
-  # 타깃 변수 고정 (디자인 유지, 선택 불가)
-    default_target = "not.fully.paid" if "not.fully.paid" in df.columns else df.columns[-1]
+    # 타깃 변수: not.fully.paid 고정 + 디자인 유지(선택 UI는 유지하되 비활성화)
+    if "not.fully.paid" not in df.columns:
+        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
+        st.stop()
 
+    default_target = "not.fully.paid"
     target_col = st.selectbox(
         "타깃(Y) 컬럼 선택",
         options=df.columns.tolist(),
         index=df.columns.tolist().index(default_target),
-        disabled=True   # 🔒 선택 기능 비활성화
+        disabled=True  # ✅ 선택 기능만 제거
     )
-
     st.session_state.target_col = target_col
 
-
-    # 타깃 분포만 표시
-    y_raw = df[TARGET]
+    # 타깃 분포
+    y_raw = df[target_col]
     st.write("타깃 분포")
     st.dataframe(
-        y_raw.value_counts(dropna=False)
-        .rename_axis("value")
-        .to_frame("count"),
+        y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
         use_container_width=True
     )
 
-    st.caption(
-        "해석 포인트: 타깃 변수는 이진(0/1)이며, 부실 여부를 나타낸다."
-    )
+    st.caption("해석 포인트: 타깃이 이진(0/1)인지 확인하고, 결측치/이상치/범주형 변수를 파악합니다.")
 
 
 # ============================================================

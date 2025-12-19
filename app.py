@@ -828,8 +828,18 @@ with tabs[4]:
     # --------------------------------------------------------
     st.markdown("### 5-A) PD 기반 고객 등급화(Grade) 설정")
 
-    n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1)
-    method = st.radio("등급 분할 방식", ["분위수(qcut) 기반(추천)", "동일 구간(cut) 기반"], index=0)
+   n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1, key="seg5_n_bins")
+
+    method = st.radio(
+        "등급 분할 방식",
+        ["분위수(qcut) 기반(추천)", "동일 구간(cut) 기반"],
+        index=0,
+        key="seg5_method"
+    )
+    
+    low_pct = st.slider("Low Risk 비중(%)", 10, 45, 30, 1, key="seg5_low_pct")
+    high_pct = st.slider("High Risk 비중(%)", 10, 45, 30, 1, key="seg5_high_pct")
+
 
     df_seg = pd.DataFrame({"y": y_test, "pd": proba_test})
 

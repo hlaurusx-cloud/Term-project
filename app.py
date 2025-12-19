@@ -475,6 +475,7 @@ with tabs[1]:
 
                 if best_var is None or best_p is None or best_p > p_enter:
                     break
+                    
 
                 selected.append(best_var)
                 remaining.remove(best_var)

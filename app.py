@@ -458,144 +458,76 @@ with tabs[1]:
     st.divider()
 
     # =========================================================
-    # ③ 데이터 분할(8:2) + 표준화(Train 기준) + 분모델 저장
+    # ③ 데이터 분할(8:2) + 표준화(Train 기준) — MLP 전용
     # =========================================================
     st.markdown("## ③ 데이터 분할(8:2) + 표준화(Train 기준)")
-    st.caption("Train/Test 분할 후, Train 기준으로 표준화하여 데이터 누수를 방지합니다. (Logit/MLP 분모델 저장)")
-
+    st.caption("Train/Test 분할 후, Train 기준으로 표준화하여 데이터 누수를 방지합니다. (MLP 저장)")
+    
     if not st.session_state.get("done_2", False):
         st.info("🔒 ② 전처리를 완료하면 ③이 활성화됩니다.")
         st.stop()
-
-    Xp = st.session_state["X_processed"]
+    
+    Xp = st.session_state["X_processed"]   # 전처리 후 전체 변수(원핫 포함)
     yp = st.session_state["y_processed"]
-
-    test_size = 0.2  # 8:2 고정
+    
+    test_size = 0.2
     st.write(f"분할 비율: Train {int((1-test_size)*100)}% / Test {int(test_size*100)}% (고정)")
-
-    feature_mode = st.radio(
-        "③에서 사용할 Feature Set",
-        options=["전처리 후 전체 변수 사용", "T-test 통과 변수만 사용(선택)"],
-        index=0
-    )
     
     if not st.session_state.get("done_3", False):
-        if st.button("데이터 분할 + 스케일링(Train 기준) 저장"):
-            # =====================================================
-            # 핵심 변경점:
-            # - MLP: 항상 전체 변수(Xp 전체 = 원핫 포함, purpose 포함)
-            # - Logit: 수치형만 사용(기본), + 선택적으로 T-test 통과 수치형만 사용
-            # =====================================================
-        
+        if st.button("데이터 분할 + 표준화(Train 기준) 저장"):
             # -----------------------------
-            # A. 공통 분할은 "전체 Xp" 기준으로 1번만 수행
-            #    (MLP는 항상 전체를 쓰기 때문에)
+            # A. 공통 분할 (항상 전체 변수 사용)
             # -----------------------------
-            test_size = 0.2
-            X_train_all, X_test_all, y_train, y_test = train_test_split(
+            X_train, X_test, y_train, y_test = train_test_split(
                 Xp, yp, test_size=test_size, random_state=42, stratify=yp
             )
-        
+    
             # -----------------------------
-            # B. MLP 컬럼: 항상 전체(원핫 포함)
-            # -----------------------------
-            cols_mlp = list(X_train_all.columns)
-        
-            # -----------------------------
-            # C. Logit 컬럼: 기본은 "수치형만"
-            #    + feature_mode가 T-test면 "T-test 통과 수치형만"
-            # -----------------------------
-            numeric_base = df.select_dtypes(include=[np.number]).columns.tolist()
-            numeric_base = [c for c in numeric_base if c != target_col]
-        
-            # Xp(원핫 후)에도 그대로 남아있는 수치형만
-            cols_logit_numeric = [c for c in cols_mlp if c in numeric_base]
-        
-            if feature_mode.startswith("T-test"):
-                passed = st.session_state.get("ttest_passed", [])
-                # passed는 원본 수치형 이름이므로 그대로 매칭되는 것만 사용
-                cols_logit = [c for c in cols_logit_numeric if c in passed]
-                if len(cols_logit) == 0:
-                    st.error("Logit용 T-test 통과 수치형 변수가 없습니다. '전체 변수 사용'으로 진행하거나 ① T-test 결과를 확인하세요.")
-                    st.stop()
-            else:
-                cols_logit = cols_logit_numeric
-        
-            if len(cols_logit) == 0:
-                st.error("Logit용 컬럼(cols_logit)이 0개입니다. 데이터 타입/컬럼명을 확인하세요.")
-                st.stop()
-        
-            # -----------------------------
-            # D. 세트별 X 구성
-            # -----------------------------
-            X_train_mlp = X_train_all[cols_mlp].copy()
-            X_test_mlp  = X_test_all[cols_mlp].copy()
-        
-            X_train_logit = X_train_all[cols_logit].copy()
-            X_test_logit  = X_test_all[cols_logit].copy()
-        
-            # -----------------------------
-            # E. 표준화(Train 기준)
-            #    - MLP: 수치형(scale_cols)에만 적용
-            #    - Logit: 기본은 표준화 안 함(해석성)
+            # B. 표준화(Train 기준) — 수치형만
             # -----------------------------
             scaler = StandardScaler()
-        
+    
             scale_cols = st.session_state.get("scale_cols", [])
-            scale_cols = [c for c in scale_cols if c in X_train_mlp.columns]
-        
+            scale_cols = [c for c in scale_cols if c in X_train.columns]
+    
+            X_train_mlp = X_train.copy()
+            X_test_mlp  = X_test.copy()
+    
             if len(scale_cols) > 0:
-                X_train_mlp[scale_cols] = scaler.fit_transform(X_train_mlp[scale_cols])
-                X_test_mlp[scale_cols]  = scaler.transform(X_test_mlp[scale_cols])
-        
+                X_train_mlp[scale_cols] = scaler.fit_transform(X_train[scale_cols])
+                X_test_mlp[scale_cols]  = scaler.transform(X_test[scale_cols])
+    
             # -----------------------------
-            # F. 저장(Session keys)
+            # C. 저장 (MLP만)
             # -----------------------------
-            st.session_state["y_train"] = y_train
-            st.session_state["y_test"]  = y_test
-        
             st.session_state["X_train_mlp"] = X_train_mlp
             st.session_state["X_test_mlp"]  = X_test_mlp
-            st.session_state["X_train_logit"] = X_train_logit
-            st.session_state["X_test_logit"]  = X_test_logit
-        
-            st.session_state["cols_mlp"] = cols_mlp          # ✅ purpose 포함
-            st.session_state["cols_logit"] = cols_logit      # ✅ 수치형만 (또는 T-test 수치형만)
-        
+            st.session_state["y_train"] = y_train
+            st.session_state["y_test"]  = y_test
+    
+            st.session_state["cols_mlp"] = list(X_train_mlp.columns)
             st.session_state["scaler"] = scaler
             st.session_state["scale_cols_applied"] = scale_cols
-        
-            # 화면 표시용: MLP 기준으로 보여주기
-            st.session_state["selected_cols"] = cols_mlp
-        
-            # 혼선 방지
-            st.session_state.pop("logit_stepwise_model", None)
-            st.session_state.pop("logit_forward_model", None)
-            st.session_state.pop("proba_test", None)
-            st.session_state.pop("model", None)
-        
+    
             st.session_state["done_3"] = True
             st.rerun()
-
-                
-        # ✅ ③ 결과 항상 표시 (MLP만)
-    if st.session_state.get("done_3", False):
     
-        # KeyError 방지
-        required_keys = ["X_train_mlp", "X_test_mlp", "cols_mlp"]
-        missing = [k for k in required_keys if k not in st.session_state or st.session_state.get(k) is None]
+    # ✅ ③ 결과 표시 (MLP만)
+    if st.session_state.get("done_3", False):
+        required = ["X_train_mlp", "X_test_mlp", "cols_mlp"]
+        missing = [k for k in required if k not in st.session_state or st.session_state.get(k) is None]
         if missing:
-            st.warning("③이 완료로 표시되었지만, MLP 분할/저장 데이터가 없습니다.")
-            st.write("누락된 세션 키:", missing)
+            st.warning("③ 결과가 불완전합니다. 버튼을 다시 눌러 저장하세요.")
+            st.write("누락된 키:", missing)
             st.session_state["done_3"] = False
             st.stop()
     
-        st.success("✅ ③ 완료: 분할 + 표준화(MLP용) 저장 완료")
-    
+        st.success("✅ ③ 완료: 분할 + 표준화(Train 기준) — MLP 저장 완료")
         st.write("MLP Train/Test:", st.session_state["X_train_mlp"].shape, "/", st.session_state["X_test_mlp"].shape)
     
-        with st.expander("MLP 변수(원핫 포함) 보기"):
-            st.write(st.session_state.get("cols_mlp", []))
+        with st.expander("MLP 변수(항상 전체, purpose 원핫 포함) 보기"):
+            st.write(st.session_state["cols_mlp"])
+
     
 
 

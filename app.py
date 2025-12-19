@@ -262,95 +262,202 @@ with tabs[0]:
 
 
 # ============================================================
-# 2) 데이터 전처리
+# 2) 데이터 전처리 & Feature Selection
 # ============================================================
-with tabs[1]:
-    st.subheader("2) 데이터 전처리: 결측치 처리, 인코딩, 표준화, 학습/평가 데이터 분할")
 
-    target_col = st.session_state.target_col
-    if target_col is None:
-        st.warning("먼저 [데이터 이해(EDA)] 탭에서 타깃이 설정되어야 합니다.")
-        st.stop()
+import numpy as np
+import pandas as pd
+from scipy import stats
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import statsmodels.api as sm
+import streamlit as st
 
-    # 설명변수 추천(스크린샷 기반)
-    suggested = [
-        "credit.policy","purpose","int.rate","installment","log.annual.inc","dti",
-        "fico","days.with.cr.line","revol.bal","revol.util","inq.last.6mths",
-        "delinq.2yrs","pub.rec"
-    ]
-    suggested = [c for c in suggested if c in df.columns]
-    default_features = [c for c in df.columns if c != target_col]
-    default_select = suggested if len(suggested) > 0 else default_features
 
-    feature_cols = st.multiselect(
-        "설명 변수(X) 선택",
-        options=default_features,
-        default=default_select
+# ------------------------------------------------------------
+# (1) T-test 기반 수치형 변수 필터링
+# ------------------------------------------------------------
+def ttest_filter_numeric(df, target_col, p_threshold=0.5):
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    num_cols = [c for c in num_cols if c != target_col]
+
+    g0 = df[df[target_col] == 0]
+    g1 = df[df[target_col] == 1]
+
+    passed_cols = []
+    results = []
+
+    for col in num_cols:
+        x0 = g0[col].dropna()
+        x1 = g1[col].dropna()
+
+        if len(x0) < 2 or len(x1) < 2:
+            continue
+
+        stat, p = stats.ttest_ind(x0, x1, equal_var=False)
+        results.append((col, p))
+
+        if p <= p_threshold:
+            passed_cols.append(col)
+
+    res_df = pd.DataFrame(results, columns=["feature", "p_value"]).sort_values("p_value")
+    return passed_cols, res_df
+
+
+# ------------------------------------------------------------
+# (2) IQR 이상치 제거
+# ------------------------------------------------------------
+def remove_outliers_iqr(df, cols, k=1.5):
+    mask = pd.Series(True, index=df.index)
+
+    for col in cols:
+        q1 = df[col].quantile(0.25)
+        q3 = df[col].quantile(0.75)
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        lower = q1 - k * iqr
+        upper = q3 + k * iqr
+        mask &= df[col].between(lower, upper)
+
+    return df[mask]
+
+
+# ------------------------------------------------------------
+# (3) 전체 전처리 파이프라인
+# ------------------------------------------------------------
+def preprocess_pipeline(df, target_col, p_threshold=0.5):
+    df = df.dropna(subset=[target_col]).copy()
+
+    # T-test
+    passed_num, ttest_table = ttest_filter_numeric(df, target_col, p_threshold)
+
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    num_cols = [c for c in num_cols if c != target_col]
+    cat_cols = [c for c in df.columns if c not in num_cols + [target_col]]
+
+    X = df[passed_num + cat_cols]
+    y = df[target_col].astype(int)
+
+    # 이상치 제거
+    if len(passed_num) > 0:
+        tmp = pd.concat([X, y], axis=1)
+        tmp = remove_outliers_iqr(tmp, passed_num)
+        X = tmp.drop(columns=[target_col])
+        y = tmp[target_col]
+
+    # 결측치 제거
+    tmp = pd.concat([X, y], axis=1).dropna()
+    X = tmp.drop(columns=[target_col])
+    y = tmp[target_col]
+
+    # 원핫 인코딩
+    X = pd.get_dummies(X, drop_first=True)
+
+    # 스케일링
+    scaler = StandardScaler()
+    scale_cols = [c for c in X.columns if c in passed_num]
+    if len(scale_cols) > 0:
+        X[scale_cols] = scaler.fit_transform(X[scale_cols])
+
+    return X, y, ttest_table, passed_num
+
+
+# ------------------------------------------------------------
+# (4) Stepwise Forward Selection (Logit)
+# ------------------------------------------------------------
+def forward_stepwise_logit(X, y, p_enter=0.05):
+    remaining = list(X.columns)
+    selected = []
+    final_model = None
+
+    while len(remaining) > 0:
+        best_p = None
+        best_var = None
+        best_model = None
+
+        for var in remaining:
+            cols = selected + [var]
+            X_const = sm.add_constant(X[cols], has_constant="add")
+
+            try:
+                model = sm.Logit(y, X_const).fit(disp=False)
+                p_val = model.pvalues[var]
+            except:
+                continue
+
+            if best_p is None or p_val < best_p:
+                best_p = p_val
+                best_var = var
+                best_model = model
+
+        if best_p is None or best_p > p_enter:
+            break
+
+        selected.append(best_var)
+        remaining.remove(best_var)
+        final_model = best_model
+
+    return final_model, selected
+
+
+# ============================================================
+# Streamlit UI
+# ============================================================
+
+st.subheader("🧹 데이터 전처리")
+
+p_threshold = st.slider("T-test p-value 기준 (≤)", 0.01, 1.0, 0.5, 0.01)
+
+if st.button("전처리"):
+    X_proc, y_proc, ttest_table, passed_num = preprocess_pipeline(
+        df, "not.fully.paid", p_threshold
     )
-    if len(feature_cols) == 0:
-        st.warning("설명 변수를 최소 1개 이상 선택하세요.")
+
+    st.session_state["X_processed"] = X_proc
+    st.session_state["y_processed"] = y_proc
+
+    st.success(f"전처리 완료 | X: {X_proc.shape}, y: {y_proc.shape}")
+    st.write("T-test 결과 (상위 20개)")
+    st.dataframe(ttest_table.head(20), use_container_width=True)
+
+
+st.divider()
+st.subheader("📌 데이터 및 Feature Selection - Stepwise + 8:2 분할")
+
+p_enter = st.slider("Stepwise 진입 기준 p-value", 0.001, 0.5, 0.05, 0.001)
+
+if st.button("Stepwise + 데이터 분할"):
+    if "X_processed" not in st.session_state:
+        st.error("먼저 [전처리]를 실행하세요.")
         st.stop()
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        test_size = st.slider("Test 비율", 0.1, 0.5, 0.2, 0.05)
-    with col2:
-        random_state = st.number_input("random_state", 0, 9999, 42, 1)
-    with col3:
-        stratify = st.checkbox("Stratify(Y) 적용", value=True)
+    X = st.session_state["X_processed"]
+    y = st.session_state["y_processed"]
 
-    if st.button("전처리 + 분할 실행"):
-        X = df[feature_cols].copy()
-        y = df[target_col].astype(int).values
+    model, selected_cols = forward_stepwise_logit(X, y, p_enter)
 
-        # 수치/범주 분리
-        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        cat_cols = [c for c in X.columns if c not in num_cols]
+    if len(selected_cols) == 0:
+        st.warning("선택된 변수가 없습니다.")
+        st.stop()
 
-        # 전처리 파이프라인
-        numeric_transformer = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler())
-        ])
-        categorical_transformer = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore"))
-        ])
+    X_sel = X[selected_cols]
 
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ("num", numeric_transformer, num_cols),
-                ("cat", categorical_transformer, cat_cols)
-            ],
-            remainder="drop"
-        )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_sel, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-        strat_y = y if stratify else None
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
-            test_size=float(test_size),
-            random_state=int(random_state),
-            stratify=strat_y
-        )
+    st.session_state["X_train"] = X_train
+    st.session_state["X_test"] = X_test
+    st.session_state["y_train"] = y_train
+    st.session_state["y_test"] = y_test
+    st.session_state["logit_stepwise_model"] = model
 
-        X_train_p = preprocessor.fit_transform(X_train)
-        X_test_p = preprocessor.transform(X_test)
+    st.success(f"Stepwise 완료 | 선택 변수 {len(selected_cols)}개")
+    st.write("선택된 변수 목록")
+    st.write(selected_cols)
 
-        # 세션 저장
-        st.session_state.feature_cols = feature_cols
-        st.session_state.preprocessor = preprocessor
-        st.session_state.X_train_p = X_train_p
-        st.session_state.X_test_p = X_test_p
-        st.session_state.y_train = y_train
-        st.session_state.y_test = y_test
-
-        # 모델/예측 초기화
-        st.session_state.model = None
-        st.session_state.proba_test = None
-
-        st.success("전처리 및 데이터 분할 완료")
-        st.write("X_train shape:", X_train_p.shape, " / X_test shape:", X_test_p.shape)
-
+    st.text(str(model.summary())[:4000])
 
 # ============================================================
 # 3) 모델링(신경망)

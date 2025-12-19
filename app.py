@@ -560,20 +560,19 @@ with tabs[2]:
     # --------------------------------------------------------
     # 가드: ③ 완료 여부
     # --------------------------------------------------------
-    required = ["X_train", "X_test", "y_train", "y_test"]
+    required = ["X_train_mlp", "X_test_mlp", "y_train", "y_test"]
     missing = [k for k in required if k not in st.session_state]
-
+    
     if missing:
-        st.info("먼저 [② 전처리 → ③ 데이터 분할]를 완료하세요.")
+        st.info("먼저 [② 전처리 → ③ 데이터 분할]를 완료하세요. (MLP용 데이터가 아직 저장되지 않았습니다.)")
         st.stop()
+
 
     # --------------------------------------------------------
     # 세션에서 데이터 로드 (핵심)
     # --------------------------------------------------------
-    X_train = st.session_state["X_train"]
-    X_test  = st.session_state["X_test"]
-    y_train = st.session_state["y_train"]
-    y_test  = st.session_state["y_test"]
+    st.session_state["X_train"] = st.session_state["X_train_mlp"]
+    st.session_state["X_test"]  = st.session_state["X_test_mlp"]
 
     # numpy 변환 (MLP 안정성)
     Xtr = X_train.values

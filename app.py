@@ -510,85 +510,90 @@ with tabs[1]:
         st.write("Train shape:", st.session_state["X_train"].shape, "/ Test shape:", st.session_state["X_test"].shape)
 
 # ============================================================
-# 3) 모델링(신경망)
+# 3) 모델링(신경망): MLP
+# Stepwise(③) 결과만 사용
 # ============================================================
 with tabs[2]:
-    st.subheader("MLP 모델링 (Neural Network)")
-    # 0) 가드: Stepwise + 분할이 완료되어야 함
+    st.subheader("3) 모델링(신경망): MLP 학습 및 예측확률(PD) 생성")
+
+    # --------------------------------------------------------
+    # 가드: Stepwise 완료 여부
+    # --------------------------------------------------------
     required = ["X_train", "X_test", "y_train", "y_test"]
     missing = [k for k in required if k not in st.session_state]
+
     if missing:
-        st.warning(f"먼저 ③ Stepwise를 완료하세요. (누락: {missing})")
+        st.info("먼저 [② 전처리 → ③ Stepwise]를 완료하세요.")
         st.stop()
-        
-        X_train = st.session_state["X_train"]
-        X_test  = st.session_state["X_test"]
-        y_train = st.session_state["y_train"]
-        y_test  = st.session_state["y_test"]
 
-    # DataFrame -> numpy (MLP는 둘 다 가능하지만 numpy가 더 안정적)
-    Xtr = X_train.values if hasattr(X_train, "values") else X_train
-    Xte = X_test.values if hasattr(X_test, "values") else X_test
-    
+    # --------------------------------------------------------
+    # 세션에서 데이터 로드 (핵심)
+    # --------------------------------------------------------
+    X_train = st.session_state["X_train"]
+    X_test  = st.session_state["X_test"]
+    y_train = st.session_state["y_train"]
+    y_test  = st.session_state["y_test"]
+
+    # numpy 변환 (MLP 안정성)
+    Xtr = X_train.values
+    Xte = X_test.values
+
     st.write("Train shape:", Xtr.shape, " / Test shape:", Xte.shape)
-    
-    # ------------------------------------------------------------
-    # 1) 하이퍼파라미터 UI
-    # ------------------------------------------------------------
-    st.markdown("### 1) MLP 하이퍼파라미터 설정")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        hidden1 = st.number_input("Hidden layer 1 neurons", 4, 512, 64, 4)
-        hidden2 = st.number_input("Hidden layer 2 neurons (0이면 1층)", 0, 512, 32, 4)
-    with col2:
-        alpha = st.select_slider("L2 규제(alpha)", options=[1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1], value=1e-4)
-        lr = st.select_slider("초기 학습률(learning_rate_init)", options=[1e-4, 3e-4, 1e-3, 3e-3, 1e-2], value=1e-3)
-    with col3:
+
+    # --------------------------------------------------------
+    # 하이퍼파라미터
+    # --------------------------------------------------------
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        h1 = st.number_input("Hidden Layer 1", 16, 512, 64, 16)
+    with c2:
+        h2 = st.number_input("Hidden Layer 2 (0이면 1층)", 0, 512, 32, 16)
+    with c3:
+        alpha = st.number_input("L2 규제(alpha)", 0.0, 0.01, 0.0001, 0.0001, format="%.4f")
+    with c4:
         max_iter = st.number_input("max_iter", 200, 5000, 2000, 100)
-        random_state = st.number_input("random_state", 0, 9999, 42, 1)
-    
-    activation = st.selectbox("Activation", ["relu", "tanh", "logistic"])
-    solver = st.selectbox("Solver", ["adam", "lbfgs", "sgd"])
 
-    # hidden layer 구조 만들기
-    hidden_layer_sizes = (hidden1,) if hidden2 == 0 else (hidden1, hidden2)
-    st.write("hidden_layer_sizes =", hidden_layer_sizes)
-    
-    # ------------------------------------------------------------
-    # 2) 불균형 대응(sample_weight) 옵션
-    # ------------------------------------------------------------
-    st.markdown("### 2) 불균형 데이터 가중치 설정")
-    use_weight = st.checkbox("불균형 대응(sample_weight) 적용", value=True)
-    
-    pos_weight = st.slider("양성(1) 가중치 배수", 1.0, 20.0, 5.0, 0.5)
-    # 예: 1 클래스에 weight=pos_weight, 0 클래스에 weight=1.0
-    sample_weight = None
-    if use_weight:
-        sample_weight = np.where(np.array(y_train) == 1, pos_weight, 1.0)
+    hidden = (int(h1),) if int(h2) == 0 else (int(h1), int(h2))
 
-# ------------------------------------------------------------
-# 3) 모델 학습
-# ------------------------------------------------------------
-if st.button("MLP 학습 실행"):
-    mlp = MLPClassifier(
-        hidden_layer_sizes=hidden_layer_sizes,
-        activation=activation,
-        solver=solver,
-        alpha=float(alpha),
-        learning_rate_init=float(lr),
-        max_iter=int(max_iter),
-        early_stopping=True,          # ✅ 과적합 방지
-        validation_fraction=0.2,      # 내부 검증셋 비율
-        n_iter_no_change=20,
-        random_state=int(random_state)
-    )
+    early_stopping = st.checkbox("early_stopping 사용", value=True)
+    validation_fraction = st.slider("validation_fraction", 0.05, 0.30, 0.10, 0.01)
 
-    mlp.fit(Xtr, y_train, sample_weight=sample_weight)
+    # --------------------------------------------------------
+    # 학습
+    # --------------------------------------------------------
+    if st.button("MLP 학습 실행"):
+        model = MLPClassifier(
+            hidden_layer_sizes=hidden,
+            activation="relu",
+            solver="adam",
+            alpha=float(alpha),
+            max_iter=int(max_iter),
+            random_state=42,
+            early_stopping=early_stopping,
+            validation_fraction=float(validation_fraction) if early_stopping else 0.1
+        )
 
-    # 세션 저장
-    st.session_state["mlp_model"] = mlp
-    st.success("MLP 학습 완료")
+        model.fit(Xtr, y_train)
+
+        st.session_state["model"] = model
+        st.success("MLP 학습 완료")
+
+        # 예측 확률
+        proba_test = model.predict_proba(Xte)[:, 1]
+        st.session_state["proba_test"] = proba_test
+
+        st.write("예측확률(PD) 샘플")
+        st.write(pd.Series(proba_test).head(10))
+
+        # loss curve
+        if hasattr(model, "loss_curve_"):
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.plot(model.loss_curve_)
+            ax.set_xlabel("Iteration")
+            ax.set_ylabel("Loss")
+            ax.set_title("Training Loss Curve")
+            st.pyplot(fig, clear_figure=True)
 
 # ------------------------------------------------------------
 # 4) 평가 (ROC/PR/CM + threshold)

@@ -578,7 +578,7 @@ with tabs[2]:
 
     # numpy 변환 (MLP 안정성)
     Xtr = X_train.to_numpy()
-    Xte = X_test.numpy()
+    Xte = X_test.to_numpy()
 
     st.write("Train shape:", Xtr.shape, " / Test shape:", Xte.shape)
 

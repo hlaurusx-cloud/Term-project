@@ -20,7 +20,7 @@ from sklearn.metrics import (
 # Streamlit 기본 설정
 # ----------------------------
 st.set_page_config(page_title="신경망 기반 개인신용평가(부실예측)", layout="wide")
-st.title("신경망(MLP) 기반 개인신용평가 모델 - Streamlit 데이터마이닝 절차")
+st.title("신경망(MLP) 기반 개인신용평가 모델")
 
 # ----------------------------
 # 유틸 함수
@@ -115,7 +115,7 @@ if "target_col" not in st.session_state:
 # 데이터마이닝 절차 탭 구성
 # ----------------------------
 tabs = st.tabs([
-    "1) 데이터 이해(EDA)",
+    "1) 데이터 탐색(EDA)",
     "2) 데이터 전처리",
     "3) 모델링(신경망)",
     "4) 성능평가",
@@ -141,13 +141,11 @@ if df is None:
 # 1) 데이터 이해(EDA)
 # ============================================================
 with tabs[0]:
-    st.subheader("1) 데이터 이해(EDA): 변수 확인, 기초통계, 타깃 분포")
+    st.subheader("1) 데이터 탐색(EDA): 변수 확인, 기초통계, 타깃 분포")
 
     st.write("데이터 미리보기")
     st.dataframe(df.head(20), use_container_width=True)
 
-    st.write("컬럼 리스트")
-    st.code(", ".join(df.columns.tolist()))
 
     st.write("기초 통계(수치형)")
     st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
@@ -162,10 +160,6 @@ with tabs[0]:
     st.write("타깃 분포")
     st.dataframe(y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"), use_container_width=True)
 
-    # 결측치 요약
-    st.write("결측치 개수(상위 30개)")
-    miss = df.isna().sum().sort_values(ascending=False).head(30)
-    st.dataframe(miss.rename("missing_count").to_frame(), use_container_width=True)
 
     st.caption("해석 포인트: 타깃이 이진(0/1)인지 확인하고, 결측치/이상치/범주형 변수를 파악합니다.")
 

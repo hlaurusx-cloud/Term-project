@@ -262,56 +262,140 @@ with tabs[0]:
 
 
 # ============================================================
-# 2) 데이터 전처리
+# 2) 데이터 전처리 (Preprocessing)
+# 목적:
+#  - 모델 학습 전에 원시 데이터를 분석에 적합한 형태로 변환
+#  - 결측치 처리, 범주형 인코딩, 수치형 스케일링
+#  - 학습용/평가용 데이터 분할
 # ============================================================
-with tabs[1]:
-    st.subheader("2) 데이터 전처리: 결측치 처리, 인코딩, 표준화, 학습/평가 데이터 분할")
 
+with tabs[1]:
+    st.subheader("2) 데이터 전처리")
+    st.markdown(
+        """
+        **데이터 전처리 단계에서는 다음과 같은 작업을 수행합니다.**
+
+        1. 타깃 변수(Y)와 설명 변수(X)를 명확히 구분  
+        2. 수치형 변수와 범주형 변수를 구분하여 서로 다른 방식으로 처리  
+        3. 결측값을 통계적 기준으로 보정  
+        4. 범주형 변수를 모델이 이해할 수 있도록 숫자 형태로 변환  
+        5. 수치형 변수의 스케일 차이를 보정  
+        6. 학습 데이터와 평가 데이터를 분리
+        """
+    )
+
+    # --------------------------------------------------------
+    # (1) 타깃 변수 확인
+    # --------------------------------------------------------
     target_col = st.session_state.target_col
     if target_col is None:
-        st.warning("먼저 [데이터 이해(EDA)] 탭에서 타깃이 설정되어야 합니다.")
+        st.warning("먼저 [데이터 이해(EDA)] 단계에서 타깃 변수를 확인해야 합니다.")
         st.stop()
 
-    # 설명변수 추천(스크린샷 기반)
+    st.info(f"현재 설정된 타깃 변수(Y): **{target_col}**")
+
+    # --------------------------------------------------------
+    # (2) 설명 변수(X) 선택
+    # --------------------------------------------------------
+    st.markdown("### 🔹 설명 변수(X) 선택")
+
+    st.markdown(
+        """
+        - 분석에 사용할 설명 변수를 선택합니다.  
+        - 기본적으로 신용평가 모델에서 자주 사용되는 변수들을 추천합니다.  
+        - 필요 시 사용자가 직접 추가/제거할 수 있습니다.
+        """
+    )
+
     suggested = [
-        "credit.policy","purpose","int.rate","installment","log.annual.inc","dti",
-        "fico","days.with.cr.line","revol.bal","revol.util","inq.last.6mths",
-        "delinq.2yrs","pub.rec"
+        "credit.policy", "purpose", "int.rate", "installment",
+        "log.annual.inc", "dti", "fico", "days.with.cr.line",
+        "revol.bal", "revol.util", "inq.last.6mths",
+        "delinq.2yrs", "pub.rec"
     ]
     suggested = [c for c in suggested if c in df.columns]
+
     default_features = [c for c in df.columns if c != target_col]
     default_select = suggested if len(suggested) > 0 else default_features
 
     feature_cols = st.multiselect(
-        "설명 변수(X) 선택",
+        "모델 학습에 사용할 설명 변수(X)",
         options=default_features,
         default=default_select
     )
+
     if len(feature_cols) == 0:
-        st.warning("설명 변수를 최소 1개 이상 선택하세요.")
+        st.warning("최소 1개 이상의 설명 변수를 선택해야 합니다.")
         st.stop()
+
+    # --------------------------------------------------------
+    # (3) 데이터 분할 옵션 설정
+    # --------------------------------------------------------
+    st.markdown("### 🔹 학습 / 평가 데이터 분할 설정")
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        test_size = st.slider("Test 비율", 0.1, 0.5, 0.2, 0.05)
+        test_size = st.slider(
+            "Test 데이터 비율",
+            0.1, 0.5, 0.2, 0.05,
+            help="전체 데이터 중 평가(Test)에 사용할 비율"
+        )
     with col2:
-        random_state = st.number_input("random_state", 0, 9999, 42, 1)
+        random_state = st.number_input(
+            "random_state",
+            0, 9999, 42, 1,
+            help="재현성을 위한 난수 시드 값"
+        )
     with col3:
-        stratify = st.checkbox("Stratify(Y) 적용", value=True)
+        stratify = st.checkbox(
+            "Stratify(Y) 적용",
+            value=True,
+            help="타깃 클래스 비율(0/1)을 Train/Test에 동일하게 유지"
+        )
 
-    if st.button("전처리 + 분할 실행"):
+    # --------------------------------------------------------
+    # (4) 전처리 + 분할 실행
+    # --------------------------------------------------------
+    if st.button("전처리 + 데이터 분할 실행"):
+        st.markdown("### 🔹 전처리 수행 결과")
+
+        # X, y 분리
         X = df[feature_cols].copy()
         y = df[target_col].astype(int).values
 
-        # 수치/범주 분리
+        st.write("원본 데이터 크기:", X.shape)
+
+        # ----------------------------------------------------
+        # 수치형 / 범주형 변수 구분
+        # ----------------------------------------------------
         num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
         cat_cols = [c for c in X.columns if c not in num_cols]
 
-        # 전처리 파이프라인
+        st.write("수치형 변수 개수:", len(num_cols))
+        st.write("범주형 변수 개수:", len(cat_cols))
+
+        # ----------------------------------------------------
+        # 전처리 파이프라인 정의
+        # ----------------------------------------------------
+        st.markdown(
+            """
+            **전처리 방법 설명**
+
+            - 수치형 변수  
+              · 결측값 → 중앙값(median)으로 대체  
+              · 변수 간 단위 차이 제거 → 표준화(Standardization)
+
+            - 범주형 변수  
+              · 결측값 → 최빈값으로 대체  
+              · One-Hot Encoding으로 숫자화
+            """
+        )
+
         numeric_transformer = Pipeline(steps=[
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler())
         ])
+
         categorical_transformer = Pipeline(steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
             ("onehot", OneHotEncoder(handle_unknown="ignore"))
@@ -325,7 +409,11 @@ with tabs[1]:
             remainder="drop"
         )
 
+        # ----------------------------------------------------
+        # 데이터 분할
+        # ----------------------------------------------------
         strat_y = y if stratify else None
+
         X_train, X_test, y_train, y_test = train_test_split(
             X, y,
             test_size=float(test_size),
@@ -333,10 +421,15 @@ with tabs[1]:
             stratify=strat_y
         )
 
+        # ----------------------------------------------------
+        # 전처리 적용
+        # ----------------------------------------------------
         X_train_p = preprocessor.fit_transform(X_train)
         X_test_p = preprocessor.transform(X_test)
 
-        # 세션 저장
+        # ----------------------------------------------------
+        # 세션 상태 저장
+        # ----------------------------------------------------
         st.session_state.feature_cols = feature_cols
         st.session_state.preprocessor = preprocessor
         st.session_state.X_train_p = X_train_p
@@ -344,12 +437,25 @@ with tabs[1]:
         st.session_state.y_train = y_train
         st.session_state.y_test = y_test
 
-        # 모델/예측 초기화
         st.session_state.model = None
         st.session_state.proba_test = None
 
-        st.success("전처리 및 데이터 분할 완료")
-        st.write("X_train shape:", X_train_p.shape, " / X_test shape:", X_test_p.shape)
+        # ----------------------------------------------------
+        # 결과 요약
+        # ----------------------------------------------------
+        st.success("전처리 및 데이터 분할이 완료되었습니다.")
+
+        st.write(
+            f"""
+            - Train 데이터 크기: {X_train_p.shape}  
+            - Test 데이터 크기: {X_test_p.shape}
+            """
+        )
+
+        st.caption(
+            "이제 전처리된 데이터를 이용하여 로지스틱 회귀, 의사결정나무 등 모델 학습을 진행할 수 있습니다."
+        )
+
 
 
 # ============================================================

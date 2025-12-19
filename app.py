@@ -395,25 +395,37 @@ with tabs[1]:
     if not st.session_state.get("done_2", False):
         if st.button("데이터 전처리 실행"):
             passed_num = st.session_state.get("ttest_passed", [])
-
+        
+            # ✅ 핵심: purpose는 무조건 범주형으로 처리 (숫자코딩 되어 있어도 원핫되게)
+            if "purpose" in df.columns:
+                df["purpose"] = df["purpose"].astype(str)
+        
+            # -------------------------------------------------
             # X 구성: 수치형=passed_num + 범주형=전체(단, target 제외)
+            #  - 범주형은 dtype 기반으로 잡는 게 가장 안정적
+            # -------------------------------------------------
             numeric_all = df.select_dtypes(include=[np.number]).columns.tolist()
-            cat_cols = [c for c in df.columns if (c not in numeric_all) and (c != target_col)]
-            use_cols = passed_num + cat_cols
-
+            cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+            cat_cols = [c for c in cat_cols if c != target_col]
+        
+            # passed_num이 비어도 cat_cols로 진행 가능(단, cat_cols도 비면 stop)
+            use_cols = list(dict.fromkeys(passed_num + cat_cols))  # 중복 제거+순서 유지
+        
             if len(use_cols) == 0:
                 st.error("전처리에 사용할 feature가 없습니다.")
                 st.stop()
-
+        
             X = df[use_cols].copy()
             y = df[target_col].astype(int).copy()
-
+        
             # (1) IQR 이상치 제거: passed 수치형에만 적용
             if len(passed_num) > 0:
                 tmp = pd.concat([X, y.rename(target_col)], axis=1)
                 mask = pd.Series(True, index=tmp.index)
-
+        
                 for c in passed_num:
+                    if c not in tmp.columns:
+                        continue
                     s = tmp[c]
                     q1 = s.quantile(0.25)
                     q3 = s.quantile(0.75)
@@ -423,30 +435,35 @@ with tabs[1]:
                     lo = q1 - iqr_k * iqr
                     hi = q3 + iqr_k * iqr
                     mask &= s.between(lo, hi) | s.isna()
-
+        
                 tmp = tmp.loc[mask].copy()
                 y = tmp[target_col].astype(int)
                 X = tmp.drop(columns=[target_col])
-
+        
             # (2) 결측치 제거(요청: 제거)
             tmp2 = pd.concat([X, y.rename(target_col)], axis=1).dropna()
             y = tmp2[target_col].astype(int)
             X = tmp2.drop(columns=[target_col])
-
+        
             # (3) 원핫 인코딩(1회만)
+            #     - 범주형(purpose 포함) → purpose_* 생성됨
             X_oh = pd.get_dummies(X, drop_first=True)
-
+        
             # (4) 표준화 대상 수치형 컬럼 기록 (③에서 Train 기준 적용)
-            #     - 주의: 원핫된 컬럼(purpose_*)은 스케일링 대상 아님
+            #     - 원핫된 컬럼(purpose_*)은 자동으로 제외됨(0/1)
             scale_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-
+        
             st.session_state["X_processed"] = X_oh
             st.session_state["y_processed"] = y
             st.session_state["scale_cols"] = scale_cols
             st.session_state["scaler"] = None
-
+        
+            # (디버깅용: 필요하면 잠깐 켰다가 지우세요)
+            # st.write("원핫 후 컬럼 예시:", [c for c in X_oh.columns if c.startswith("purpose_")][:10])
+        
             st.session_state["done_2"] = True
             st.rerun()
+
 
     # ✅ ② 결과 항상 표시
     if st.session_state.get("done_2", False):

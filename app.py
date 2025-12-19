@@ -3,49 +3,52 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+
 import statsmodels.api as sm
-from scipy import stats
-from sklearn.model_selection import train_test_split
+
+from sklearn.model_selection import train_test_split, learning_curve, StratifiedKFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import (
     roc_auc_score, roc_curve,
     accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix
+    confusion_matrix, log_loss
 )
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
 
-# ----------------------------
-# Streamlit 기본 설정
-# ----------------------------
-st.set_page_config(page_title="신경망 기반 개인신용평가(부실예측)", layout="wide")
-st.title("신경망(MLP) 기반 개인신용평가 모델")
+# ============================================================
+# Utilities
+# ============================================================
 
-# ----------------------------
-# 유틸 함수
-# ----------------------------
-def safe_read_csv(uploaded_file) -> pd.DataFrame:
-    raw = uploaded_file.read()
-    for enc in ["utf-8", "cp949", "euc-kr"]:
-        try:
-            return pd.read_csv(io.BytesIO(raw), encoding=enc)
-        except Exception:
-            continue
-    return pd.read_csv(io.BytesIO(raw), encoding_errors="ignore")
+def safe_div(a, b):
+    return a / b if b != 0 else 0.0
 
-def metrics_from_proba(y_true, proba, threshold=0.5):
-    pred = (proba >= threshold).astype(int)
-    return {
-        "AUC": roc_auc_score(y_true, proba),
-        "Accuracy": accuracy_score(y_true, pred),
-        "Precision": precision_score(y_true, pred, zero_division=0),
-        "Recall": recall_score(y_true, pred, zero_division=0),
-        "F1": f1_score(y_true, pred, zero_division=0),
-        "CM": confusion_matrix(y_true, pred),
-        "pred": pred
-    }
+def oversample_minority(X: pd.DataFrame, y: pd.Series, random_state: int = 42) -> tuple[pd.DataFrame, pd.Series]:
+    """Simple random oversampling without external deps."""
+    rng = np.random.default_rng(random_state)
+    y = y.astype(int).copy()
+    X = X.copy()
+
+    cls_counts = y.value_counts()
+    if len(cls_counts) != 2:
+        return X, y
+
+    maj = cls_counts.idxmax()
+    minc = cls_counts.idxmin()
+    n_maj = int(cls_counts.max())
+    n_min = int(cls_counts.min())
+    if n_min == 0 or n_min == n_maj:
+        return X, y
+
+    idx_min = y[y == minc].index.to_numpy()
+    add_idx = rng.choice(idx_min, size=(n_maj - n_min), replace=True)
+    X_os = pd.concat([X, X.loc[add_idx]], axis=0)
+    y_os = pd.concat([y, y.loc[add_idx]], axis=0)
+    return X_os, y_os
 
 def plot_roc(y_true, proba, title="ROC Curve"):
     fpr, tpr, _ = roc_curve(y_true, proba)
@@ -58,634 +61,499 @@ def plot_roc(y_true, proba, title="ROC Curve"):
     ax.set_title(title)
     return fig
 
-def make_quantile_grades(proba, n_bins=5):
-    # 분위수 기반 위험등급 생성(낮음=A, 높음=...)
-    s = pd.Series(proba)
-    # 중복값이 많을 때 qcut 실패 방지: rank 사용
-    r = s.rank(method="average")
-    q = pd.qcut(r, q=n_bins, labels=False, duplicates="drop")
-    actual_bins = int(pd.Series(q).nunique())
-    labels = [chr(ord("A") + i) for i in range(actual_bins)]  # A,B,C...
-    grade = pd.Series(q).map(lambda i: labels[int(i)] if pd.notna(i) else labels[-1])
-    return grade, labels
+def make_quantile_grades(proba, n_bins=10):
+    # Higher PD => worse grade (larger number)
+    s = pd.Series(proba).rank(method="first")
+    bins = pd.qcut(s, q=n_bins, labels=False, duplicates="drop") + 1
+    return bins.astype(int)
 
-def segmentation_table(y_true, proba, n_bins=10):
-    import numpy as np
-    import pandas as pd
+def fit_stepwise_logit_forward_backward(
+    X: pd.DataFrame,
+    y: pd.Series,
+    p_enter: float = 0.05,
+    p_remove: float = 0.10,
+    max_iter: int = 100
+):
+    """
+    Forward selection with backward elimination using statsmodels Logit.
+    Starts empty, iteratively adds the best variable with p < p_enter,
+    then removes any variable with p > p_remove. Returns selected columns and fitted model.
+    """
+    y = y.astype(int)
+    remaining = list(X.columns)
+    selected: list[str] = []
+    model = None
 
-    # 1️⃣ 强制 1D
-    y_true = np.asarray(y_true).ravel()
-    proba  = np.asarray(proba).ravel()
+    def _fit(cols):
+        Xc = sm.add_constant(X[cols], has_constant="add")
+        # Use try/except for separation / singularities
+        return sm.Logit(y, Xc).fit(disp=False, maxiter=max_iter)
 
-    # 2️⃣ 长度检查（关键）
-    if len(y_true) != len(proba):
-        raise ValueError(
-            f"[segmentation_table] 长度不一致: y_true={len(y_true)}, proba={len(proba)}"
-        )
+    changed = True
+    while changed:
+        changed = False
 
-    # 3️⃣ 分箱（按概率分位数）
-    grade = pd.qcut(proba, q=n_bins, labels=False, duplicates="drop") + 1
+        # -------- Forward step
+        best_p = None
+        best_col = None
+        best_model = None
+        for col in remaining:
+            cols_try = selected + [col]
+            try:
+                m = _fit(cols_try)
+                p = float(m.pvalues.get(col, 1.0))
+            except Exception:
+                continue
+            if best_p is None or p < best_p:
+                best_p = p
+                best_col = col
+                best_model = m
 
-    temp = pd.DataFrame({
-        "PD": proba,
-        "Y": y_true,
-        "Grade": grade
-    })
+        if best_col is not None and best_p is not None and best_p < p_enter:
+            selected.append(best_col)
+            remaining.remove(best_col)
+            model = best_model
+            changed = True
 
-    agg = (
-        temp.groupby("Grade")
-        .agg(
-            cnt=("Y", "size"),
-            bad=("Y", "sum"),
-            avg_pd=("PD", "mean")
-        )
-        .reset_index()
+        # -------- Backward step
+        if selected:
+            try:
+                m_full = _fit(selected)
+                # drop const
+                pvals = m_full.pvalues.drop(labels=["const"], errors="ignore")
+                worst_p = float(pvals.max()) if len(pvals) else 0.0
+                if len(pvals) and worst_p > p_remove:
+                    worst_col = str(pvals.idxmax())
+                    selected.remove(worst_col)
+                    remaining.append(worst_col)
+                    model = _fit(selected) if selected else None
+                    changed = True
+                else:
+                    model = m_full
+            except Exception:
+                # if refit fails, keep last model
+                pass
+
+    return model, selected
+
+def sklearn_learning_curve_plot(estimator, X, y, cv_splits=5, random_state=42):
+    cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
+    train_sizes, train_scores, valid_scores = learning_curve(
+        estimator,
+        X, y,
+        cv=cv,
+        scoring="roc_auc",
+        n_jobs=None,
+        train_sizes=np.linspace(0.1, 1.0, 8)
     )
-
-    agg["bad_rate"] = agg["bad"] / agg["cnt"]
-
-    return agg, temp
-
-
-def plot_default_rate_by_grade(agg_df, title="Default Rate by Risk Grade"):
     fig = plt.figure()
     ax = fig.add_subplot(111)
-    ax.bar(agg_df["Grade"], agg_df["Default_Rate"])
-    ax.set_xlabel("Risk Grade (A=Low → High)")
-    ax.set_ylabel("Observed Default Rate")
-    ax.set_title(title)
+    ax.plot(train_sizes, train_scores.mean(axis=1))
+    ax.plot(train_sizes, valid_scores.mean(axis=1))
+    ax.set_xlabel("Training examples")
+    ax.set_ylabel("ROC-AUC")
+    ax.set_title("Learning Curve (ROC-AUC)")
+    ax.legend(["Train", "CV"], loc="best")
     return fig
 
 
-# ----------------------------
-# 세션 상태
-# ----------------------------
-if "df" not in st.session_state:
-    st.session_state.df = None
-if "prep_pipe" not in st.session_state:
-    st.session_state.prep_pipe = None
-if "model" not in st.session_state:
-    st.session_state.model = None
-if "X_test" not in st.session_state:
-    st.session_state["X_test"] = None
-if "y_test" not in st.session_state:
-    st.session_state.y_test = None
-if "proba_test" not in st.session_state:
-    st.session_state.proba_test = None
-if "feature_cols" not in st.session_state:
-    st.session_state.feature_cols = None
-if "target_col" not in st.session_state:
-    st.session_state.target_col = None
+# ============================================================
+# App UI
+# ============================================================
 
+st.set_page_config(page_title="Credit Default Modeling", layout="wide")
+st.title("부실율(0/1) 예측 Streamlit 앱")
 
-# ----------------------------
-# 데이터마이닝 절차 탭 구성
-# ----------------------------
 tabs = st.tabs([
     "1) 데이터 탐색(EDA)",
-    "2) 데이터 전처리",
-    "3) 모델링(신경망)",
+    "2) 전처리 & 분할",
+    "3) 모델링",
     "4) 성능평가",
     "5) PD 기반 고객세분화/부실율"
 ])
 
-# ============================================================
-# 0) 데이터 업로드 (공통)
-# ============================================================
-st.sidebar.header("데이터 업로드")
-uploaded = st.sidebar.file_uploader("CSV 업로드", type=["csv"])
+# ---------------------------
+# 0) Upload
+# ---------------------------
+with st.sidebar:
+    st.header("전역 설정")
+    random_state = st.number_input("Random State", min_value=0, max_value=999999, value=42, step=1)
+    test_size = st.slider("Test 비율", 0.1, 0.5, 0.2, 0.05)
+    st.caption("Random state는 분할/모델 재현성을 위해 사용됩니다.")
 
-if uploaded is not None:
-    df = safe_read_csv(uploaded)
-    st.session_state.df = df
-
-df = st.session_state.df
-if df is None:
-    st.info("좌측 사이드바에서 CSV 파일을 업로드하세요.")
+uploaded = st.file_uploader("CSV 업로드", type=["csv"])
+if uploaded is None:
+    st.info("CSV 파일을 업로드하면 탭별 기능이 활성화됩니다.")
     st.stop()
+
+# encoding fallback
+raw = uploaded.read()
+for enc in ["utf-8", "cp949", "euc-kr", "latin1"]:
+    try:
+        df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+        break
+    except Exception:
+        df = None
+if df is None:
+    st.error("CSV 인코딩을 확인할 수 없습니다. utf-8/cp949/euc-kr 등을 확인해 주세요.")
+    st.stop()
+
+st.session_state.setdefault("df", df)
+
+with st.sidebar:
+    st.subheader("타깃 설정")
+    target_col = st.selectbox("종속변수(0/1)", options=df.columns.tolist(), index=df.columns.get_loc("not.fully.paid") if "not.fully.paid" in df.columns else 0)
+    st.caption("0/1 이진 변수만 지원합니다.")
+
+# basic target validation
+if target_col not in df.columns:
+    st.error("타깃 컬럼이 데이터에 없습니다.")
+    st.stop()
+
 # ============================================================
-# 1) 데이터 이해(EDA)
+# 1) EDA
 # ============================================================
 with tabs[0]:
-    st.subheader("1) 데이터 탐색(EDA): 변수 확인, 기초통계, 타깃 분포")
+    st.subheader("1) 데이터 탐색(EDA)")
+    st.write("행/열:", df.shape)
+    st.dataframe(df.head(20), use_container_width=True)
 
-    st.write("데이터 크기:", df.shape)
-    st.write("데이터 미리보기")
-    st.dataframe(df.head(5), use_container_width=True)
-    
-    st.write("기초 통계(수치형)")
-    st.dataframe(df.describe(include=[np.number]).T, use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 결측치 요약")
+        na = df.isna().mean().sort_values(ascending=False).to_frame("missing_ratio")
+        st.dataframe(na.head(30), use_container_width=True)
+    with col2:
+        st.markdown("#### 타깃 분포")
+        vc = df[target_col].value_counts(dropna=False)
+        st.write(vc)
+        if vc.sum() > 0:
+            st.write("양성(1) 비율:", safe_div(int(vc.get(1, 0)), int(vc.sum())))
 
-    # 타깃 변수: not.fully.paid 고정 + 디자인 유지(선택 UI는 유지하되 비활성화)
-    if "not.fully.paid" not in df.columns:
-        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
-        st.stop()
-
-    default_target = "not.fully.paid"
-    target_col = st.selectbox(
-        "타깃(Y) 컬럼 선택",
-        options=df.columns.tolist(),
-        index=df.columns.tolist().index(default_target),
-        disabled=True  # ✅ 선택 기능만 제거
-    )
-    st.session_state.target_col = target_col
-
-    # 타깃 분포
-    y_raw = df[target_col]
-    st.write("타깃 분포")
-    st.dataframe(
-        y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
-        use_container_width=True
-    )
-
-    
-    # ------------------------------------------------------------
-    # EDA 시각화 (교체 버전)
-    # ------------------------------------------------------------
-    st.markdown("## 📊 EDA 시각화")
-
-    # 1️⃣ 타깃 변수 분포 (Count + 불균형 확인)
-    st.markdown("### 1️⃣ 타깃 변수 분포")
-    target_cnt = y_raw.value_counts().sort_index()
-    target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
-
-    fig, ax = plt.subplots()
-    ax.bar(target_cnt.index.astype(str), target_cnt.values)
-    ax.set_xlabel("Target (0 = 정상, 1 = 부실)")
-    ax.set_ylabel("Count")
-    ax.set_title("Target Distribution")
-    st.pyplot(fig)
-
-    st.dataframe(
-        pd.DataFrame({"count": target_cnt, "ratio(%)": target_ratio}),
-        use_container_width=True
-    )
-
-    st.caption(
-        "해석: 1(부실)보다 0(정상)의 비율이 매우 큰 경우, "
-        "로지스틱/신경망 등 분류 모델에서 예측 편향 및 성능지표 해석 오류가 발생할 수 있습니다."
-    )
-
-    # 2️⃣ 수치형 변수 선택 → 타깃별 분포 비교(Boxplot)
-    st.markdown("### 2️⃣ 수치형 변수의 타깃별 분포 비교")
+    st.markdown("#### 수치형 상관관계(참고)")
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    num_cols = [c for c in num_cols if c != target_col]
-
-    if len(num_cols) == 0:
-        st.warning("수치형 변수가 없습니다.")
-    else:
-        selected_var = st.selectbox("분포를 비교할 수치형 변수 선택", options=num_cols, key="eda_selected_num")
-
-        tmp = df[[selected_var, target_col]].dropna()
-        if tmp[target_col].nunique() == 2:
-            g0 = tmp[tmp[target_col] == 0][selected_var]
-            g1 = tmp[tmp[target_col] == 1][selected_var]
-
-            fig, ax = plt.subplots()
-            ax.boxplot([g0, g1], labels=["Target = 0", "Target = 1"])
-            ax.set_title(f"{selected_var} : Target별 분포 비교")
-            ax.set_ylabel(selected_var)
-            st.pyplot(fig)
-
-            st.caption(
-                "해석: 두 그룹의 중앙값·분산 차이가 클수록 해당 변수는 부실 여부를 구분하는 데 유의미할 가능성이 있습니다."
-            )
-
-            # 3️⃣ 분포 진단 (왜도·첨도 + 정규성 참고)
-            st.markdown("### 3️⃣ 분포 진단 (참고)")
-            x = tmp[selected_var]
-            st.write(f"- 왜도 (Skewness): {stats.skew(x):.4f}")
-            st.write(f"- 첨도 (Kurtosis, fisher): {stats.kurtosis(x, fisher=True):.4f}")
-
-            if len(x) >= 3:
-                x_sample = x.sample(n=min(5000, len(x)), random_state=42)
-                _, p_value = stats.shapiro(x_sample)
-                st.write(f"- Shapiro-Wilk p-value (표본≤5000): {p_value:.6f}")
-
-            st.caption(
-                "참고: 정규성은 로지스틱 회귀의 필수 전제는 아니지만, 극단적 왜도/이상치는 계수 추정과 모델 안정성에 영향을 줄 수 있습니다."
-            )
-        else:
-            st.info("타깃이 이진(0/1) 형태가 아니어서 타깃별 박스플롯 비교를 생략합니다.")
-
-    # 4️⃣ 수치형 변수 상관관계 (다중공선성 확인)
-    st.markdown("### 4️⃣ 수치형 변수 상관관계(Heatmap)")
-    num_df = df.select_dtypes(include=[np.number]).copy()
-    if num_df.shape[1] >= 2:
-        corr = num_df.corr(numeric_only=True)
-
-        fig, ax = plt.subplots(figsize=(10, 6))
-        im = ax.imshow(corr.values)
-        ax.set_xticks(range(len(corr.columns)))
-        ax.set_yticks(range(len(corr.columns)))
-        ax.set_xticklabels(corr.columns, rotation=90)
-        ax.set_yticklabels(corr.columns)
-        ax.set_title("Correlation Heatmap (Numeric Variables)")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        st.pyplot(fig)
-
-        st.caption("해석: 상관계수가 매우 높은 변수 쌍은 다중공선성 문제를 유발할 수 있어, 변수 선택/축소가 필요할 수 있습니다.")
+    if target_col in num_cols:
+        num_cols = [c for c in num_cols if c != target_col]
+    if len(num_cols) >= 2:
+        corr = df[num_cols].corr()
+        st.dataframe(corr.round(3), use_container_width=True)
     else:
         st.info("상관관계를 계산할 수 있는 수치형 변수가 충분하지 않습니다.")
 
-
 # ============================================================
-# 2) 데이터 전처리 (Wizard-like / 단계 고정형)
-# ① T-test (p<=0.05) -> 통과 feature만 표시
-# ② 전처리 버튼 -> 이상치/결측치 제거 + 원핫 + 스케일링
-# ③ 데이터 분할(8:2) + Train 기준 표준화
+# 2) Preprocess & Split
 # ============================================================
-
 with tabs[1]:
-    st.subheader("2) 데이터 전처리")
+    st.subheader("2) 전처리 & 분할")
+    st.caption("권장 흐름: (1) 전처리 → (2) Train/Test 분할 → (3) (선택) 변수선택/모델링")
 
-    # -----------------------------
-    # 상태 초기화 (Reset 버튼 없음)
-    # -----------------------------
-    if "done_1" not in st.session_state: st.session_state["done_1"] = False
-    if "done_2" not in st.session_state: st.session_state["done_2"] = False
-    if "done_3" not in st.session_state: st.session_state["done_3"] = False
-
-    # -----------------------------
-    # 타깃 확인
-    # -----------------------------
-    target_col = st.session_state.get("target_col", None)
-    if target_col is None:
-        st.warning("먼저 [EDA] 탭에서 타깃 변수를 설정해야 합니다.")
-        st.stop()
-
-    # 과제 조건: not.fully.paid 고정
-    target_col = "not.fully.paid"
     if target_col not in df.columns:
-        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
         st.stop()
 
-    st.info(f"타깃(Y): {target_col}")
+    # Identify feature columns
+    y_raw = df[target_col].astype(int)
+    X_raw = df.drop(columns=[target_col])
 
-    # =========================================================
-    # ① T-test
-    # =========================================================
-    st.markdown("## ① T-test 기반 Feature 1차 선별")
-    st.caption("수치형 변수만, not.fully.paid(0/1) 기준, p-value ≤ 0.05 통과")
+    numeric_cols = X_raw.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = [c for c in X_raw.columns if c not in numeric_cols]
 
-    p_thr = 0.05
-    num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
-    num_cols_all = [c for c in num_cols_all if c != target_col]
+    st.markdown("#### 전처리 설정")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        do_outlier = st.checkbox("수치형 이상치 제거(IQR)", value=True)
+        iqr_k = st.slider("IQR k", 1.0, 3.0, 1.5, 0.1, disabled=not do_outlier)
+    with c2:
+        scale_numeric = st.checkbox("수치형 표준화(StandardScaler)", value=True)
+    with c3:
+        drop_na_target = st.checkbox("타깃 결측 제거", value=True)
 
-    if not st.session_state["done_1"]:
-        if st.button("T-test 실행 (p ≤ 0.05)"):
-            g0 = df[df[target_col] == 0]
-            g1 = df[df[target_col] == 1]
+    if st.button("전처리 실행"):
+        dfx = df.copy()
+        if drop_na_target:
+            dfx = dfx.dropna(subset=[target_col])
 
-            rows = []
-            passed = []
-
-            for col in num_cols_all:
-                x0 = g0[col].dropna()
-                x1 = g1[col].dropna()
-                if len(x0) < 2 or len(x1) < 2:
+        # outlier removal on numeric features only (row-wise)
+        if do_outlier and len(numeric_cols) > 0:
+            tmp = dfx[numeric_cols]
+            q1 = tmp.quantile(0.25)
+            q3 = tmp.quantile(0.75)
+            iqr = (q3 - q1).replace(0, np.nan)
+            lower = q1 - iqr_k * iqr
+            upper = q3 + iqr_k * iqr
+            mask = np.ones(len(dfx), dtype=bool)
+            for c in numeric_cols:
+                if pd.isna(iqr[c]):
                     continue
+                mask &= (dfx[c] >= lower[c]) & (dfx[c] <= upper[c])
+            dfx = dfx.loc[mask].copy()
 
-                try:
-                    _, p = stats.ttest_ind(x0, x1, equal_var=False, nan_policy="omit")
-                except Exception:
-                    continue
+        y0 = dfx[target_col].astype(int)
+        X0 = dfx.drop(columns=[target_col])
 
-                rows.append((col, float(p)))
-                if p <= p_thr:
-                    passed.append(col)
+        num_cols2 = X0.select_dtypes(include=[np.number]).columns.tolist()
+        cat_cols2 = [c for c in X0.columns if c not in num_cols2]
 
-            ttest_df = pd.DataFrame(rows, columns=["feature", "p_value"]).sort_values("p_value")
+        num_pipe = Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler() if scale_numeric else "passthrough"),
+        ])
+        cat_pipe = Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse=False)),
+        ])
 
-            st.session_state["ttest_passed"] = passed
-            st.session_state["ttest_table"] = ttest_df
-            st.session_state["done_1"] = True
-            st.rerun()
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", num_pipe, num_cols2),
+                ("cat", cat_pipe, cat_cols2),
+            ],
+            remainder="drop",
+            verbose_feature_names_out=False
+        )
 
-    # ✅ ① 결과는 항상 표시(사라지지 않음)
-    if st.session_state.get("done_1", False):
-        passed = st.session_state.get("ttest_passed", [])
-        st.success(f"✅ ① 완료: 통과 feature {len(passed)}개")
-        st.markdown("### ✅ T-test 통과 feature 목록")
-        st.write(passed if len(passed) > 0 else "통과 feature 없음")
+        Xp = preprocessor.fit_transform(X0)
+        feat_names = preprocessor.get_feature_names_out()
+        Xp = pd.DataFrame(Xp, columns=feat_names, index=X0.index)
 
-        with st.expander("p-value 결과표 보기(선택)"):
-            st.dataframe(st.session_state.get("ttest_table", pd.DataFrame()),
-                         use_container_width=True)
+        st.session_state["preprocessor"] = preprocessor
+        st.session_state["X_processed"] = Xp
+        st.session_state["y_processed"] = y0
+        st.success("전처리가 완료되었습니다.")
 
-    st.divider()
-
-    # =========================================================
-    # ② 데이터 전처리
-    # =========================================================
-    st.markdown("## ② 데이터 전처리")
-    st.caption("이상치 제거(IQR) + 결측치 제거 + 원핫 인코딩 + 스케일링")
-
-    if not st.session_state.get("done_1", False):
-        st.info("🔒 ① T-test를 완료하면 ②가 활성화됩니다.")
-        st.stop()
-    iqr_k = 1.5  # IQR 이상치 제거 강도(k) 고정 (UI 설정 제거)
-    if not st.session_state.get("done_2", False):
-        if st.button("데이터 전처리 실행"):
-            passed_num = st.session_state.get("ttest_passed", [])
-
-            # X 구성: 수치형=passed_num + 범주형=전체(단, target 제외)
-            numeric_all = df.select_dtypes(include=[np.number]).columns.tolist()
-            cat_cols = [c for c in df.columns if (c not in numeric_all) and (c != target_col)]
-            use_cols = passed_num + cat_cols
-
-            if len(use_cols) == 0:
-                st.error("전처리에 사용할 feature가 없습니다.")
-                st.stop()
-
-            X = df[use_cols].copy()
-            y = df[target_col].astype(int).copy()
-
-            # (1) 이상치 제거(IQR) - passed 수치형에만 적용
-            if len(passed_num) > 0:
-                tmp = pd.concat([X, y], axis=1)
-                mask = pd.Series(True, index=tmp.index)
-
-                for c in passed_num:
-                    s = tmp[c]
-                    q1 = s.quantile(0.25)
-                    q3 = s.quantile(0.75)
-                    iqr = q3 - q1
-                    if pd.isna(iqr) or iqr == 0:
-                        continue
-
-                    lo = q1 - iqr_k * iqr
-                    hi = q3 + iqr_k * iqr
-                    mask &= s.between(lo, hi) | s.isna()
-
-                tmp = tmp.loc[mask].copy()
-                y = tmp[target_col].astype(int)
-                X = tmp.drop(columns=[target_col])
-
-            # (2) 결측치 제거(요청: 제거)
-            tmp2 = pd.concat([X, y], axis=1).dropna()
-            y = tmp2[target_col].astype(int)
-            X = tmp2.drop(columns=[target_col])
-
-            # (3) 원핫 인코딩
-            X_oh = pd.get_dummies(X, drop_first=True)
-
-            # (3) 원핫 인코딩
-            X_oh = pd.get_dummies(X, drop_first=True)
-
-            # (4) 스케일링은 ③ 단계(Train/Test 분할 이후)에서 수행
-            #     - 데이터 누수 방지(MLP/신경망 학습에 필수)
-            scale_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-
-            st.session_state["X_processed"] = X_oh
-            st.session_state["y_processed"] = y
-            st.session_state["scale_cols"] = scale_cols
-            st.session_state["scaler"] = None
-
-            st.session_state["done_2"] = True
-            st.rerun()
-            st.rerun()
-
-    # ✅ ② 결과 항상 표시
-    if st.session_state.get("done_2", False):
+    if "X_processed" in st.session_state:
         Xp = st.session_state["X_processed"]
         yp = st.session_state["y_processed"]
-        st.success("✅ ② 완료: 전처리 결과가 저장되어 있습니다.")
         st.write(f"전처리 후 X shape: {Xp.shape} / y length: {len(yp)}")
 
-    st.divider()
-
-    # =========================================================
-    # ③ 데이터 분할(8:2) + 표준화(Train 기준)
-    # =========================================================
-    st.markdown("## ③ 데이터 분할(8:2) + 표준화(Train 기준)")
-    st.caption("Train/Test 분할 후, Train 기준으로 표준화하여 데이터 누수를 방지합니다.")
-
-    if not st.session_state.get("done_2", False):
-        st.info("🔒 ② 전처리를 완료하면 ③이 활성화됩니다.")
-        st.stop()
-
-    Xp = st.session_state["X_processed"]
-    yp = st.session_state["y_processed"]
-
-    # 먼저 8:2 분할(고정)
-    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-        Xp, yp, test_size=0.2, random_state=42, stratify=yp
-    )
-    st.write(f"분할 완료: Train {X_train_raw.shape} / Test {X_test_raw.shape}")
-
-    test_size = 0.2  # 8:2 고정
-    st.write(f"분할 비율: Train {int((1-test_size)*100)}% / Test {int(test_size*100)}% (고정)")
-
-    # 어떤 feature를 사용할지 선택 (MLP 친화)
-    feature_mode = st.radio(
-        "③에서 사용할 Feature Set",
-        options=["전처리 후 전체 변수 사용", "T-test 통과 변수만 사용(선택)"],
-        index=0
-    )
-
-    if not st.session_state.get("done_3", False):
-        if st.button("데이터 분할 + 스케일링(Train 기준) 저장"):
-            # -----------------------------
-            # A. 사용할 컬럼 확정
-            # -----------------------------
-            cols = list(Xp.columns)
-            passed = st.session_state.get("ttest_passed", [])
-            if feature_mode.startswith("T-test") and len(passed) > 0:
-                cols = [c for c in cols if c in passed]
-                if len(cols) == 0:
-                    st.error("T-test 통과 변수가 없습니다. '전체 변수 사용'으로 진행하세요.")
-                    st.stop()
-
-            # -----------------------------
-            # B. 8:2 분할 (stratify 유지)
-            # -----------------------------
-            X_use = Xp[cols].copy()
-            X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-                X_use, yp, test_size=test_size, random_state=42, stratify=yp
+        if st.button("Train/Test 분할 저장"):
+            X_train, X_test, y_train, y_test = train_test_split(
+                Xp, yp,
+                test_size=float(test_size),
+                random_state=int(random_state),
+                stratify=yp if yp.nunique() == 2 else None
             )
-
-            # -----------------------------
-            # C. 표준화(Train 기준) — MLP 필수 전처리
-            # -----------------------------
-            scaler = StandardScaler()
-            scale_cols = st.session_state.get("scale_cols", [])
-            # 전처리 이후에도 이름이 유지되는 수치형 컬럼만 스케일링
-            scale_cols = [c for c in scale_cols if c in X_train_raw.columns]
-
-            X_train = X_train_raw.copy()
-            X_test = X_test_raw.copy()
-            if len(scale_cols) > 0:
-                X_train[scale_cols] = scaler.fit_transform(X_train_raw[scale_cols])
-                X_test[scale_cols] = scaler.transform(X_test_raw[scale_cols])
-
-            # -----------------------------
-            # D. 저장
-            # -----------------------------
-            st.session_state["selected_cols"] = cols
             st.session_state["X_train"] = X_train
             st.session_state["X_test"] = X_test
             st.session_state["y_train"] = y_train
             st.session_state["y_test"] = y_test
-            st.session_state["scaler"] = scaler
+            st.success("분할이 완료되었습니다.")
 
-            # Logit/Stepwise 관련 key 제거(혼선 방지)
-            st.session_state.pop("logit_stepwise_model", None)
-
-            st.session_state.pop("proba_test", None)
-            st.session_state.pop("model", None)
-
-            st.session_state["done_3"] = True
-            st.rerun()
-
-    # ✅ ③ 결과 항상 표시
-    if st.session_state.get("done_3", False):
-        st.success("✅ ③ 완료: 8:2 분할 + Train 기준 표준화 분할 결과가 저장되어 있습니다.")
-        st.write("선택 변수 수:", len(st.session_state["selected_cols"]))
-        with st.expander("선택 변수 전체 보기"):
-            st.write(st.session_state["selected_cols"])
-        st.write("Train shape:", st.session_state["X_train"].shape, "/ Test shape:", st.session_state["X_test"].shape)
+        if all(k in st.session_state for k in ["X_train","X_test","y_train","y_test"]):
+            st.write("Train shape:", st.session_state["X_train"].shape, "/ Test shape:", st.session_state["X_test"].shape)
 
 # ============================================================
-# 3) 모델링(신경망): MLP
-# ③ 단계(데이터 분할) 결과만 사용
+# 3) Modeling
 # ============================================================
 with tabs[2]:
-    st.subheader("3) 모델링(신경망): MLP 학습 및 예측확률(PD) 생성")
+    st.subheader("3) 모델링")
 
-    # --------------------------------------------------------
-    # 가드: ③ 완료 여부
-    # --------------------------------------------------------
     required = ["X_train", "X_test", "y_train", "y_test"]
     missing = [k for k in required if k not in st.session_state]
-
     if missing:
-        st.info("먼저 [② 전처리 → ③ 데이터 분할]를 완료하세요.")
+        st.warning("먼저 [전처리 & 분할] 탭에서 전처리 및 Train/Test 분할을 완료하세요.")
         st.stop()
 
-    # --------------------------------------------------------
-    # 세션에서 데이터 로드 (핵심)
-    # --------------------------------------------------------
     X_train = st.session_state["X_train"]
-    X_test  = st.session_state["X_test"]
+    X_test = st.session_state["X_test"]
     y_train = st.session_state["y_train"]
-    y_test  = st.session_state["y_test"]
+    y_test = st.session_state["y_test"]
 
-    # numpy 변환 (MLP 안정성)
-    Xtr = X_train.values
-    Xte = X_test.values
+    st.markdown("#### 모델 선택")
+    model_type = st.selectbox("모델", ["Logistic Regression", "Decision Tree", "MLP(신경망)"])
 
-    st.write("Train shape:", Xtr.shape, " / Test shape:", Xte.shape)
+    st.markdown("#### 데이터 불균형 처리")
+    imb_mode = st.selectbox("방법", ["없음", "Class Weight (balanced)", "Random Oversampling"], index=1)
 
-    # --------------------------------------------------------
-    # 하이퍼파라미터
-    # --------------------------------------------------------
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        h1 = st.number_input("Hidden Layer 1", 16, 512, 64, 16)
-    with c2:
-        h2 = st.number_input("Hidden Layer 2 (0이면 1층)", 0, 512, 32, 16)
-    with c3:
-        alpha = st.number_input("L2 규제(alpha)", 0.0, 0.01, 0.0001, 0.0001, format="%.4f")
-    with c4:
-        max_iter = st.number_input("max_iter", 200, 5000, 2000, 100)
+    st.markdown("#### (선택) Stepwise 변수선택 (Forward + Backward)")
+    use_stepwise = (model_type == "Logistic Regression") and st.checkbox("Stepwise 적용", value=True)
+    if use_stepwise:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            p_enter = st.number_input("진입(p_enter)", min_value=0.001, max_value=0.5, value=0.05, step=0.005)
+        with c2:
+            p_remove = st.number_input("제거(p_remove)", min_value=0.001, max_value=0.8, value=0.10, step=0.01)
+        with c3:
+            max_iter = st.number_input("max_iter(statsmodels)", min_value=20, max_value=500, value=100, step=10)
 
-    hidden = (int(h1),) if int(h2) == 0 else (int(h1), int(h2))
+    st.divider()
 
-    early_stopping = st.checkbox("early_stopping 사용", value=True)
-    validation_fraction = st.slider("validation_fraction", 0.05, 0.30, 0.10, 0.01)
+    if st.button("모델 학습 및 예측확률 생성"):
+        X_tr = X_train.copy()
+        y_tr = y_train.copy()
 
-    # --------------------------------------------------------
-    # 학습
-    # --------------------------------------------------------
-    if st.button("MLP 학습 실행"):
-        model = MLPClassifier(
-            hidden_layer_sizes=hidden,
-            activation="relu",
-            solver="adam",
-            alpha=float(alpha),
-            max_iter=int(max_iter),
-            random_state=42,
-            early_stopping=early_stopping,
-            validation_fraction=float(validation_fraction) if early_stopping else 0.1
-        )
+        # imbalance handling (training only)
+        class_weight = None
+        if imb_mode == "Class Weight (balanced)":
+            class_weight = "balanced"
+        elif imb_mode == "Random Oversampling":
+            X_tr, y_tr = oversample_minority(X_tr, y_tr, random_state=int(random_state))
 
-        model.fit(Xtr, y_train)
+        selected_cols = list(X_tr.columns)
 
-        st.session_state["model"] = model
-        st.success("MLP 학습 완료")
+        # stepwise selection on (possibly resampled) training set
+        if use_stepwise:
+            with st.spinner("Stepwise Logit 변수선택 수행 중..."):
+                sm_model, selected_cols = fit_stepwise_logit_forward_backward(
+                    X_tr, y_tr,
+                    p_enter=float(p_enter),
+                    p_remove=float(p_remove),
+                    max_iter=int(max_iter)
+                )
+            if len(selected_cols) == 0:
+                st.error("Stepwise 결과 선택된 변수가 없습니다. p_enter/p_remove를 완화하거나 전처리를 점검하세요.")
+                st.stop()
+            st.session_state["sm_stepwise_model"] = sm_model
+            st.session_state["selected_cols"] = selected_cols
+            st.success(f"선택 변수 수: {len(selected_cols)}")
 
-        # 예측 확률
-        proba_test = model.predict_proba(Xte)[:, 1]
+        # Fit chosen sklearn model (for prediction, logloss, learning curve)
+        if model_type == "Logistic Regression":
+            est = LogisticRegression(
+                max_iter=2000,
+                solver="liblinear",
+                class_weight=class_weight,
+                random_state=int(random_state)
+            )
+        elif model_type == "Decision Tree":
+            est = DecisionTreeClassifier(
+                random_state=int(random_state),
+                class_weight=("balanced" if class_weight == "balanced" else None)
+            )
+        else:
+            # MLP: no class_weight; oversampling recommended
+            est = MLPClassifier(
+                hidden_layer_sizes=(64, 32),
+                activation="relu",
+                alpha=0.0005,
+                max_iter=400,
+                random_state=int(random_state)
+            )
+
+        est.fit(X_tr[selected_cols], y_tr)
+        proba_test = est.predict_proba(X_test[selected_cols])[:, 1]
+
+        st.session_state["estimator"] = est
+        st.session_state["model_type"] = model_type
+        st.session_state["imb_mode"] = imb_mode
         st.session_state["proba_test"] = proba_test
+        st.session_state["selected_cols"] = selected_cols
+        st.success("모델 학습 및 예측확률(PD) 생성이 완료되었습니다.")
 
-        st.write("예측확률(PD) 샘플")
-        st.write(pd.Series(proba_test).head(10))
-
-        # loss curve
-        if hasattr(model, "loss_curve_"):
-            fig = plt.figure()
-            ax = fig.add_subplot(111)
-            ax.plot(model.loss_curve_)
-            ax.set_xlabel("Iteration")
-            ax.set_ylabel("Loss")
-            ax.set_title("Training Loss Curve")
-            st.pyplot(fig, clear_figure=True)
+    # Show coefficients / p-values when available
+    if model_type == "Logistic Regression" and "sm_stepwise_model" in st.session_state and st.session_state.get("selected_cols"):
+        st.markdown("#### Stepwise(Logit) 결과 요약 (statsmodels)")
+        sm_model = st.session_state["sm_stepwise_model"]
+        if sm_model is not None:
+            try:
+                summ = sm_model.summary2().tables[1]
+                st.dataframe(summ, use_container_width=True)
+            except Exception:
+                st.info("statsmodels 요약을 표시할 수 없습니다.")
 
 # ============================================================
-# 4) 모델 평가 & Segmentation (PD 등급표)
+# 4) Evaluation
 # ============================================================
 with tabs[3]:
-    st.subheader("4) 모델 평가 및 PD Segmentation")
+    st.subheader("4) 성능평가")
 
-    # ======================================================
-    # ✅ 세그멘테이션 호출 전 가드 (⭐你找的就是这个)
-    # ======================================================
-    required = ["y_test", "proba_test"]
+    required = ["y_test", "proba_test", "X_train", "y_train", "X_test"]
     missing = [k for k in required if k not in st.session_state]
-
     if missing:
-        st.warning("먼저 MLP 모델을 학습하여 예측확률(PD)을 생성하세요.")
+        st.warning("먼저 [모델링] 탭에서 모델을 학습하세요.")
         st.stop()
 
     y_test = st.session_state["y_test"]
     proba_test = st.session_state["proba_test"]
+    y_pred = (proba_test >= 0.5).astype(int)
 
-    # 타입 안전 가드
-    import numpy as np
-    y_test = np.asarray(y_test).ravel()
-    proba_test = np.asarray(proba_test).ravel()
+    # Metrics
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred, zero_division=0)
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    auc = roc_auc_score(y_test, proba_test)
+    ll = log_loss(y_test, proba_test, labels=[0,1])
 
-    if len(y_test) != len(proba_test):
-        st.error(
-            f"y_test({len(y_test)})와 proba_test({len(proba_test)}) 길이가 다릅니다.\n"
-            "③(분할/표준화) 이후 MLP를 다시 학습하세요."
-        )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Accuracy", f"{acc:.4f}")
+    c1.metric("ROC-AUC", f"{auc:.4f}")
+    c2.metric("Precision", f"{prec:.4f}")
+    c2.metric("Recall", f"{rec:.4f}")
+    c3.metric("F1-score", f"{f1:.4f}")
+    c3.metric("Cross-Entropy (Log Loss)", f"{ll:.4f}")
+
+    st.divider()
+
+    # Confusion matrix
+    st.markdown("#### Confusion Matrix (threshold=0.5)")
+    cm = confusion_matrix(y_test, y_pred, labels=[0,1])
+    cm_df = pd.DataFrame(cm, index=["True 0", "True 1"], columns=["Pred 0", "Pred 1"])
+    st.dataframe(cm_df, use_container_width=True)
+
+    # ROC curve
+    st.markdown("#### ROC Curve")
+    st.pyplot(plot_roc(y_test, proba_test, title="ROC Curve"))
+
+    st.divider()
+
+    # Learning curve
+    st.markdown("#### Learning Curve")
+    if "estimator" not in st.session_state:
+        st.info("학습곡선을 위해서는 sklearn estimator가 필요합니다.")
+    else:
+        est = st.session_state["estimator"]
+        selected_cols = st.session_state.get("selected_cols", list(st.session_state["X_train"].columns))
+        X_train = st.session_state["X_train"][selected_cols]
+        y_train = st.session_state["y_train"]
+
+        try:
+            fig = sklearn_learning_curve_plot(est, X_train, y_train, cv_splits=5, random_state=int(random_state))
+            st.pyplot(fig)
+            st.caption("스코어는 ROC-AUC 기준입니다. Train/CV 간 갭이 크면 과적합 가능성이 있습니다.")
+        except Exception as e:
+            st.info(f"Learning curve를 계산할 수 없습니다: {e}")
+
+# ============================================================
+# 5) Segmentation
+# ============================================================
+with tabs[4]:
+    st.subheader("5) PD 기반 고객세분화/부실율")
+
+    required = ["y_test", "proba_test"]
+    missing = [k for k in required if k not in st.session_state]
+    if missing:
+        st.warning("먼저 [모델링] 탭에서 예측확률(PD)을 생성하세요.")
         st.stop()
 
+    y_test = st.session_state["y_test"]
+    proba_test = st.session_state["proba_test"]
+    st.write(f"Test 샘플 수: {len(y_test)}")
 
-    # ======================================================
-    # Segmentation 설정
-    # ======================================================
-    st.markdown("### 🔹 PD Segmentation 설정")
+    st.markdown("### PD Segmentation 설정")
     n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1)
 
-    # ======================================================
-    # Segmentation 실행
-    # ======================================================
-    agg, raw = segmentation_table(
-        y_test,
-        proba_test,
-        n_bins=int(n_bins)
+    grades = make_quantile_grades(proba_test, n_bins=n_bins)
+    seg = pd.DataFrame({
+        "PD": proba_test,
+        "Grade": grades,
+        "Default(1)": y_test.values
+    })
+
+    summary = (
+        seg.groupby("Grade")
+        .agg(n=("PD", "size"), avg_pd=("PD", "mean"), default_rate=("Default(1)", "mean"))
+        .reset_index()
+        .sort_values("Grade")
     )
+    st.dataframe(summary, use_container_width=True)
 
-    st.success("PD Segmentation Table 생성 완료")
-
-    # ======================================================
-    # 결과 표시
-    # ======================================================
-    st.markdown("### 📊 PD Segmentation Table")
-    st.dataframe(agg, use_container_width=True)
-
-    st.markdown("### 📄 개별 관측치 (샘플)")
-    st.dataframe(raw.head(20), use_container_width=True)
+    st.markdown("#### Grade별 PD/부실율 시각화")
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(summary["Grade"], summary["avg_pd"])
+    ax.plot(summary["Grade"], summary["default_rate"])
+    ax.set_xlabel("Grade")
+    ax.set_ylabel("Rate")
+    ax.set_title("Avg PD vs Default Rate by Grade")
+    ax.legend(["Avg PD", "Default rate"], loc="best")
+    st.pyplot(fig)

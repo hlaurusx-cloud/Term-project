@@ -178,12 +178,12 @@ with tabs[0]:
 
     # 타깃 변수: not.fully.paid 고정 + 디자인 유지(선택 UI는 유지하되 비활성화)
     if "not.fully.paid" not in df.columns:
-        st.error("타깃 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
+        st.error("타켓 변수 'not.fully.paid' 컬럼이 데이터에 없습니다.")
         st.stop()
 
     default_target = "not.fully.paid"
     target_col = st.selectbox(
-        "타깃(Y) 컬럼 선택",
+        "타켓(Y) 컬럼 선택",
         options=df.columns.tolist(),
         index=df.columns.tolist().index(default_target),
         disabled=True  # ✅ 선택 기능만 제거
@@ -192,7 +192,7 @@ with tabs[0]:
 
     # 타깃 분포
     y_raw = df[target_col]
-    st.write("타깃 분포")
+    st.write("타켓 분포")
     st.dataframe(
         y_raw.value_counts(dropna=False).rename_axis("value").to_frame("count"),
         use_container_width=True
@@ -205,7 +205,7 @@ with tabs[0]:
     st.markdown("## 📊 EDA 시각화")
 
     # 1️⃣ 타깃 변수 분포 (Count + 불균형 확인)
-    st.markdown("### 1️⃣ 타깃 변수 분포")
+    st.markdown("### 1️⃣ 타켓 변수 분포")
     target_cnt = y_raw.value_counts().sort_index()
     target_ratio = (target_cnt / target_cnt.sum() * 100).round(2)
 

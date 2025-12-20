@@ -600,25 +600,35 @@ with tabs[2]:
     early_stopping = st.checkbox("early_stopping 사용", value=True)
     validation_fraction = st.slider("validation_fraction", 0.05, 0.30, 0.10, 0.01)
 
-    # --------------------------------------------------------
+        # --------------------------------------------------------
     # 학습
     # --------------------------------------------------------
     if st.button("MLP 학습 실행"):
+        from sklearn.utils.class_weight import compute_sample_weight
+
         model = MLPClassifier(
             hidden_layer_sizes=hidden,
             activation="relu",
             solver="adam",
             alpha=float(alpha),
             max_iter=int(max_iter),
+
+            # ✅ 재현성 확보 (임의의 값이지만 고정)
             random_state=42,
+
+            # early stopping
             early_stopping=early_stopping,
             validation_fraction=float(validation_fraction) if early_stopping else 0.1
         )
 
-        model.fit(Xtr, y_train)
+        # ✅ 클래스 불균형 보정: class_weight='balanced'의 MLP 버전(= sample_weight)
+        #   - MLPClassifier는 class_weight 파라미터가 없으므로 fit에 sample_weight를 준다.
+        sw = compute_sample_weight(class_weight="balanced", y=y_train)
+
+        model.fit(Xtr, y_train, sample_weight=sw)
 
         st.session_state["model"] = model
-        st.success("MLP 학습 완료")
+        st.success("MLP 학습 완료 (random_state=42, sample_weight=balanced 적용)")
 
         # 예측 확률
         proba_test = model.predict_proba(Xte)[:, 1]
@@ -636,6 +646,7 @@ with tabs[2]:
             ax.set_ylabel("Loss")
             ax.set_title("Training Loss Curve")
             st.pyplot(fig, clear_figure=True)
+
 
 # ============================================================
 # 4) 모델 평가 & Segmentation (PD 등급표)
@@ -757,35 +768,13 @@ with tabs[3]:
 
     st.divider()
 
-    # ------------------------------------------------------
-    # 4-B) PD Segmentation
-    # ------------------------------------------------------
-    st.markdown("## ✅ 4-B) PD Segmentation (Grade Table)")
-
-    st.markdown("### 🔹 PD Segmentation 설정")
-    n_bins = st.slider("등급 수 (Grade 개수)", 5, 20, 10, 1)
-
-    # Segmentation 실행 (기존 함수 사용)
-    try:
-        agg, raw = segmentation_table(y_test=y_test, proba=proba_test, n_bins=int(n_bins))
-    except TypeError:
-        # 네 함수가 positional만 받는 경우 대비
-        agg, raw = segmentation_table(y_test, proba_test, n_bins=int(n_bins))
-
-    st.success("PD Segmentation Table 생성 완료")
-
-    # 결과 표시
-    st.markdown("### 📊 PD Segmentation Table")
-    st.dataframe(agg, use_container_width=True)
-
-    st.markdown("### 📄 개별 관측치 (샘플)")
-    st.dataframe(raw.head(20), use_container_width=True)
-
+   
    
 # ============================================================
 # 5) 고객 세분화 전략 제시 + 시각화 (PD 기반)
-#   - 입력: y_test, proba_test (Tab3/4에서 생성된 것)
-#   - 출력: Grade Table + Segment Table + 전략 + 시각화 3종
+#   - 입력: y_test, proba_test
+#   - 출력: Grade Table + Segment Table + 전략 + 시각화
+#   - 고정: Grade=14, qcut, Segment 비중=30/40/30
 # ============================================================
 with tabs[4]:
     st.subheader("5) 고객 세분화 전략 제시 + 시각화 (PD 기반)")
@@ -818,14 +807,13 @@ with tabs[4]:
     proba_test = np.clip(proba_test, 1e-12, 1 - 1e-12)
 
     # --------------------------------------------------------
-    # A) Grade 설정 + Risk Segment 구조(고정 + 개념도 표시)
+    # 5-A) 고정 설정 + 개념도(슬라이더/라디오 제거)
     # --------------------------------------------------------
-    st.markdown("### 5-A) PD 기반 고객 등급화(Grade) + Risk Segment 설정")
+    st.markdown("### 5-A) PD 기반 고객 등급화(Grade) + Risk Segment 설정 (고정)")
 
     n_bins = 14
+    method = "qcut"   # 분위수 기반 고정
 
-    method = "분위수(qcut) 기반"
-    
     # ✅ Risk Segment 비중 고정 (30/40/30)
     low_pct = 0.30
     mid_pct = 0.40
@@ -833,27 +821,45 @@ with tabs[4]:
 
     st.markdown(
         """
-        - **Grade 개수**: 14
-        - **등급 분할 방식**: 분위수(qcut) 기반  
-        - 📌 Risk Segment 구조(고정, 30/40/30)
+- **Grade 개수**: 14 (고정)  
+- **등급 분할 방식**: 분위수(qcut) 기반 (고정)  
+- **Risk Segment 비중**: Low 30% / Medium 40% / High 30% (고정)
         """
     )
 
+    # ✅ 개념도(슬라이더 대신)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title("Risk Segment Concept (Fixed 30/40/30)")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    # segments
+    ax.barh([0.5], [low_pct*100], left=0, height=0.25, label="Low Risk")
+    ax.barh([0.5], [mid_pct*100], left=low_pct*100, height=0.25, label="Medium Risk")
+    ax.barh([0.5], [high_pct*100], left=(low_pct+mid_pct)*100, height=0.25, label="High Risk")
+
+    ax.text(low_pct*50, 0.5, "Low 30%", ha="center", va="center")
+    ax.text(low_pct*100 + mid_pct*50, 0.5, "Medium 40%", ha="center", va="center")
+    ax.text((low_pct+mid_pct)*100 + high_pct*50, 0.5, "High 30%", ha="center", va="center")
+
+    st.pyplot(fig, clear_figure=True)
+
+    # --------------------------------------------------------
+    # Grade 생성
+    # --------------------------------------------------------
     df_seg = pd.DataFrame({"y": y_test, "pd": proba_test})
 
-    # Grade 생성 (낮은 PD → 낮은 Grade)
     try:
-        if method.startswith("분위수"):
-            df_seg["grade"] = pd.qcut(df_seg["pd"], q=int(n_bins), labels=False, duplicates="drop")
-        else:
-            df_seg["grade"] = pd.cut(df_seg["pd"], bins=int(n_bins), labels=False, include_lowest=True)
+        df_seg["grade"] = pd.qcut(df_seg["pd"], q=int(n_bins), labels=False, duplicates="drop")
         df_seg["grade"] = df_seg["grade"].astype(int) + 1
     except Exception as e:
-        st.error(f"Grade 생성 실패: {e}")
+        st.error(f"Grade 생성 실패(qcut): {e}")
         st.stop()
 
     # --------------------------------------------------------
-    # B) Grade Summary (보고서용 핵심 표)
+    # 5-B) Grade Summary
     # --------------------------------------------------------
     st.markdown("### 5-B) Grade 요약 테이블")
 
@@ -870,6 +876,7 @@ with tabs[4]:
         .reset_index()
         .sort_values("grade")
     )
+
     grade_summary["share"] = grade_summary["n"] / grade_summary["n"].sum()
     grade_summary["cum_share"] = grade_summary["share"].cumsum()
     grade_summary["cum_bad"] = grade_summary["bad"].cumsum()
@@ -878,11 +885,10 @@ with tabs[4]:
     st.dataframe(grade_summary, use_container_width=True)
 
     # --------------------------------------------------------
-    # C) Risk Segment (Low/Medium/High) - ✅ 슬라이더 제거, 고정 비중 사용
+    # 5-C) Risk Segment 결과(고정 비중 기반)
     # --------------------------------------------------------
     st.markdown("### 5-C) Risk Segment (Low / Medium / High) 결과")
 
-    # 고객 누적 기준 컷 계산 (low_pct/high_pct 고정값 사용)
     tmp = grade_summary.copy()
     tmp["cum_n"] = tmp["n"].cumsum()
     total_n = tmp["n"].sum()
@@ -914,7 +920,6 @@ with tabs[4]:
         .reset_index()
     )
 
-    # 순서 정렬
     order = pd.Categorical(
         segment_summary["segment"],
         categories=["Low Risk", "Medium Risk", "High Risk"],
@@ -923,45 +928,28 @@ with tabs[4]:
     segment_summary = segment_summary.assign(_ord=order).sort_values("_ord").drop(columns=["_ord"])
     segment_summary["share"] = segment_summary["n"] / segment_summary["n"].sum()
 
-    # 컷 정보도 같이 보여주기(설명용)
-    st.info(f"세그먼트 컷(Grade 기준): Low ≤ G{low_cut_grade} / High ≥ G{high_cut_grade} (비중 30/40/30 고정)")
+    st.info(f"세그먼트 컷(Grade 기준): Low ≤ G{low_cut_grade} / High ≥ G{high_cut_grade} (30/40/30 고정)")
     st.dataframe(segment_summary, use_container_width=True)
 
     # --------------------------------------------------------
-    # D) 전략 제시 (표)
+    # 5-D) 전략 제시
     # --------------------------------------------------------
     st.markdown("### 5-D) 고객 세분화 전략(예시)")
 
     strategy_df = pd.DataFrame([
-        {
-            "Segment": "Low Risk",
-            "정의": "PD 낮음 / 부실률 낮음",
-            "권장 전략": "우대금리, 한도 상향, 자동승인 비중 확대",
-            "목표": "수익 극대화(우량 고객 유지/확대)"
-        },
-        {
-            "Segment": "Medium Risk",
-            "정의": "PD 중간 / 관리 필요",
-            "권장 전략": "조건부 승인, 추가 심사, 모니터링 강화",
-            "목표": "리스크 관리 + 선별적 수익"
-        },
-        {
-            "Segment": "High Risk",
-            "정의": "PD 높음 / 부실률 높음",
-            "권장 전략": "대출 제한/거절, 담보·보증 요구, 금리 상향, 사후관리 강화",
-            "목표": "손실 최소화(리스크 회피)"
-        },
+        {"Segment":"Low Risk","정의":"PD 낮음 / 부실률 낮음","권장 전략":"우대금리, 한도 상향, 자동승인 비중 확대","목표":"수익 극대화(우량 고객 유지/확대)"},
+        {"Segment":"Medium Risk","정의":"PD 중간 / 관리 필요","권장 전략":"조건부 승인, 추가 심사, 모니터링 강화","목표":"리스크 관리 + 선별적 수익"},
+        {"Segment":"High Risk","정의":"PD 높음 / 부실률 높음","권장 전략":"대출 제한/거절, 담보·보증 요구, 금리 상향, 사후관리 강화","목표":"손실 최소화(리스크 회피)"},
     ])
     st.dataframe(strategy_df, use_container_width=True)
 
     # --------------------------------------------------------
-    # E) 시각화
+    # 5-E) 시각화 3종
     # --------------------------------------------------------
     st.markdown("### 5-E) 시각화")
 
     colA, colB = st.columns(2)
 
-    # 1) Grade별 고객 수 분포
     with colA:
         fig = plt.figure()
         ax = fig.add_subplot(111)
@@ -971,7 +959,6 @@ with tabs[4]:
         ax.set_title("Customer Count by Grade")
         st.pyplot(fig, clear_figure=True)
 
-    # 2) Grade별 실제 부실률 vs 평균 PD
     with colB:
         fig = plt.figure()
         ax = fig.add_subplot(111)
@@ -983,7 +970,6 @@ with tabs[4]:
         ax.legend()
         st.pyplot(fig, clear_figure=True)
 
-    # 3) 누적 고객비중 vs 누적 부실비중 (High PD부터)
     st.markdown("#### 누적 부실 포착 (Lift-like)")
 
     gs_desc = grade_summary.sort_values("grade", ascending=False).copy()

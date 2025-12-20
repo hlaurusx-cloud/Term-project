@@ -827,24 +827,6 @@ with tabs[4]:
         """
     )
 
-    # ✅ 개념도(슬라이더 대신)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    ax.set_title("Risk Segment Concept (Fixed 30/40/30)")
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
-    # segments
-    ax.barh([0.5], [low_pct*100], left=0, height=0.25, label="Low Risk")
-    ax.barh([0.5], [mid_pct*100], left=low_pct*100, height=0.25, label="Medium Risk")
-    ax.barh([0.5], [high_pct*100], left=(low_pct+mid_pct)*100, height=0.25, label="High Risk")
-
-    ax.text(low_pct*50, 0.5, "Low 30%", ha="center", va="center")
-    ax.text(low_pct*100 + mid_pct*50, 0.5, "Medium 40%", ha="center", va="center")
-    ax.text((low_pct+mid_pct)*100 + high_pct*50, 0.5, "High 30%", ha="center", va="center")
-
-    st.pyplot(fig, clear_figure=True)
 
     # --------------------------------------------------------
     # Grade 생성
